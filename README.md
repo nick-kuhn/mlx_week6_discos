@@ -18,17 +18,3 @@ tldr_ds = TLDRDataset('CarperAI/openai_summarize_tldr', tokenizer, split="train"
 print(tldr_ds[0])  
 ```
 
-to do: 
-remove the normalized reward 
-add in the base model 
-should output:  
-
-reddit post: ... 
-
-human summary: ...
-base_model summary: ... 
-fine_tuned summary: ...
-
-human reward: x
-base_model reward: x
-fine_tuned reward: x
