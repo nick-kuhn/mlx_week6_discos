@@ -79,6 +79,14 @@ def load_prerequisites(model_type, model_path=None):
         model = AutoModelForCausalLM.from_pretrained(base_model_name)
         tokenizer = AutoTokenizer.from_pretrained(base_model_name)
         
+        # Set pad token if not present (same as training)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.pad_token_id = tokenizer.eos_token_id
+            
+        # Resize token embeddings to match training setup
+        model.resize_token_embeddings(len(tokenizer))
+        
         # Check if this is a LoRA adapter or full model checkpoint
         checkpoint_files = os.listdir(adapter_path)
         if any('adapter' in f for f in checkpoint_files) or any('.bin' in f and 'adapter' in f for f in checkpoint_files):
