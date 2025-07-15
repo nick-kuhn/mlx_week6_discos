@@ -11,4 +11,7 @@ dependencies = [
     "transformers>=4.53.2",
     "wandb>=0.21.0",
     "evaluate",
+    "rouge-score>=0.1.2",
+    "nltk>=3.9.1",
+    "absl-py>=2.3.1",
 ]

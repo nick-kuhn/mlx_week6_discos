@@ -1,16 +1,12 @@
 import argparse
-import evaluate
+from torch.utils.data import DataLoader
 import torch
-from datasets import load_dataset
+from datasets import load_dataset, load_metric
 from tqdm import tqdm
-from transformers import (
-    AutoModelForCausalLM,
-    AutoModelForSequenceClassification,
-    AutoTokenizer,
-)
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 """
-Module for evaluating RLHF text summarizer
+Module for evaluating RLHF text summarizer: 
 
 """
 
@@ -18,7 +14,7 @@ Module for evaluating RLHF text summarizer
 """ 
 LOAD PREREQUISITES 
 
-1. Load fine_tuned_model 
+1. Load fine-tuned model 
 2. Load tokeniser 
 3. Load the TL:DR dataset
 4. Load the ROUGE metric calculator from a library 
@@ -26,32 +22,17 @@ LOAD PREREQUISITES
 """
 
 
-def load_finetune_model(model_path):
-    # Load fine-tuned fine_tuned_model
-    fine_tuned_model = AutoModelForSequenceClassification.from_pretrained(model_path)
+def load_prerequisites(model_path):
+    # Load fine-tuned model
+    model = AutoModelForSequenceClassification.from_pretrained(model_path)
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     # Load the TL:DR dataset
-    dataset = load_dataset('CarperAI/openai_summarize_tldr', split="test")
-    rouge_metric = evaluate.load("rouge")
-    return fine_tuned_model, tokenizer, dataset, rouge_metric
+    dataset = load_dataset("tldr_news", split="test")
+    # Load the ROUGE metric calculator
+    rouge_metric = load_metric("rouge")
+    return model, tokenizer, dataset, rouge_metric
 
-'''
-LOAD BASE MODEL and PREREQ
-function to load base model
-
-1. Load base Qwen/Qwen3-0.6B-Base
-2. Load tokeniser Qwen/Qwen3-0.6B-Base
-3. Load the TL:DR dataset
-4. Load the ROUGE metric calculator from a library 
-'''
-
-def load_base_model():
-    base_model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-0.6B-Base")
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B-Base")
-    dataset = load_dataset('CarperAI/openai_summarize_tldr', split="test")
-    rouge_metric = evaluate.load("rouge")
-    return base_model, tokenizer, dataset, rouge_metric
 
 """
 PREPARE LISTS  
@@ -65,43 +46,45 @@ Make empty lists to hold:
 def prepare_lists():
     generated_summaries = []
     reference_summaries = []
-    return generated_summaries, reference_summaries
+    example_posts = []
+    return generated_summaries, reference_summaries, example_posts
+'''
+DEF GENERATE PREDICTION
+'''
 
+def generate_prediction(model, tokenizer, text, mask_length):
+    inputs = tokenizer(text, return_tensors="pt")
+    outputs = model.generate(**inputs, do_sample=True, temperature=0.7)
+    return tokenizer.decode(outputs[0][mask_length:], skip_special_tokens=True).strip()
 
 """
-GENERATE SUMMARIES 
-A function to iterate through
-each item in the TLDR test set one by one 
-For each item: 
-1. take the post that neeeds to be summarized
-2. use fine-tuned fine_tuned_model to generate a summary 
-3. clean up the generated summary by 
-converting it from token IDs back to readable text 
-4. Add the summary created by fine_tuned_model to list of generated summaries 
-5. Add the originsal, human-written 
-sumamary to the list of reference summaries 
- 
+GET_EXAMPLES
+A function to return example posts, generated summaries, provided summaries
 """
 
+def get_examples(model, tokenizer, dataset, device, num_examples=5):
+    model.eval()
+    #get pad token id
+    pad_token_id = tokenizer.pad_token_id
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
+    example_posts = []
+    provided_summaries = []
+    generated_summaries = []
+    with torch.no_grad():
+        for batch in dataloader:
+            #determine the length of masking in the labels
+            mask_length = (batch['labels'] == -100).sum()
+            story_text = tokenizer.decode(batch['input_ids'][:mask_length], skip_special_tokens=True)
+            original_summary = tokenizer.decode(batch['labels'][mask_length:], skip_special_tokens=True)
+            prediction = generate_prediction(model, tokenizer, story_text, mask_length)
+            example_posts.append(story_text)
+            provided_summaries.append(original_summary)
+            generated_summaries.append(prediction)
+            if len(example_posts) >= num_examples:
+                break
+    return example_posts, generated_summaries, provided_summaries, 
+            
 
-def generate_summaries(
-    fine_tuned_model, tokenizer, dataset, generated_summaries, reference_summaries
-):
-    for item in tqdm(dataset):
-        post = item["post"]
-        # Generate summary
-        inputs = tokenizer(post, return_tensors="pt", max_length=512, truncation=True)
-        with torch.no_grad():
-            summary_ids = fine_tuned_model.generate(
-                inputs["input_ids"],
-                max_length=150,
-                min_length=40,
-                num_beams=4,
-                early_stopping=True,
-            )
-        generated_summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
-        generated_summaries.append(generated_summary)
-        reference_summaries.append(item["summary"])
 
 
 """
@@ -118,11 +101,11 @@ ROUGE-L: Measures the longest common subsequence (LCS) of words, assessing sente
 """
 
 
-def calculate_rouge_scores(rouge_metric, generated_summaries, reference_summaries):
+def calculate_rouge_scores(rouge_metric, generated_summaries, provided_summaries):
     # Calculate ROUGE scores
     scores = rouge_metric.compute(
         predictions=generated_summaries,
-        references=reference_summaries,
+        references=provided_summaries,
         use_stemmer=True,
     )
 
@@ -143,56 +126,29 @@ Human sense check:
 3. Print the models summary 
 
 """
-
-
-def human_sense_check(dataset, generated_summaries):
+def human_sense_check(example_posts, provided_summaries, generated_summaries):
     print("\nHuman Sense Check:")
-    for i in range(3):
-        idx = torch.randint(0, len(dataset), (1,)).item()
-        print(f"\n--- Example {i + 1} ---")
-        print(f"Original Post:\n{dataset[idx]['post']}")
-        print(f"Human Summary:\n{dataset[idx]['summary']}")
-        print(f"Model Summary:\n{generated_summaries[idx]}")
+    for i in range(min(3, len(example_posts))):
+        print(f"\n--- Example {i+1} ---")
+        print(f"Original Post:\n{example_posts[i]}")
+        print(f"\nProvided Summary:\n{provided_summaries[i]}")
+        print(f"\nGenerated Summary:\n{generated_summaries[i]}")
 
-
-"""
-Main Function: 
-1. give user option in terminal to load finetuned model ( and request path) or load base model 
-2. run evaluation on selected model
-    
-"""
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Evaluate RLHF text summarizer models."
-    )
+    parser = argparse.ArgumentParser(description="Evaluate RLHF text summarizer.")
     parser.add_argument(
-        "--model_type",
-        type=str,
-        choices=["finetuned", "base"],
-        required=True,
-        help="Type of model to evaluate: 'finetuned' or 'base'.",
-    )
-    parser.add_argument(
-        "--model_path",
-        type=str,
-        help="Path to the fine-tuned model (required if --model_type is 'finetuned').",
+        "--model_path", type=str, required=True, help="Path to the fine-tuned model."
     )
     args = parser.parse_args()
 
-    if args.model_type == "finetuned":
-        if not args.model_path:
-            parser.error("--model_path is required for 'finetuned' model_type.")
-        model, tokenizer, dataset, rouge_metric = load_finetune_model(args.model_path)
-        print(f"Evaluating fine-tuned model from: {args.model_path}")
-    elif args.model_type == "base":
-        model, tokenizer, dataset, rouge_metric = load_base_model()
-        print("Evaluating base model.")
-
+    model, tokenizer, dataset, rouge_metric = load_prerequisites(args.model_path)
     generated_summaries, reference_summaries = prepare_lists()
-    generate_summaries(model, tokenizer, dataset, generated_summaries, reference_summaries)
+    get_examples(
+        model, tokenizer, dataset, generated_summaries, provided_summaries
+    )
     calculate_rouge_scores(rouge_metric, generated_summaries, reference_summaries)
-    human_sense_check(dataset, generated_summaries)
+    human_sense_check(example_posts, provided_summaries, generated_summaries)
 
 
 if __name__ == "__main__":
