@@ -31,8 +31,6 @@ def evaluate(model, tokenizer, val_dataset, device):
 
 def get_examples(model, tokenizer, val_dataset, device, num_examples=5):
     model.eval()
-    #get pad token id
-    pad_token_id = tokenizer.pad_token_id
     dataloader = DataLoader(val_dataset, batch_size=1, shuffle=True)
     example_posts = []
     provided_summaries = []
@@ -43,8 +41,8 @@ def get_examples(model, tokenizer, val_dataset, device, num_examples=5):
             mask_length = (batch['labels'] == -100).sum()
             print("Mask length:", mask_length)
             
-            story_text = tokenizer.decode(batch['input_ids'][:mask_length], skip_special_tokens=True)
-            original_summary = tokenizer.decode(batch['labels'][mask_length:], skip_special_tokens=True)
+            story_text = tokenizer.decode(batch['input_ids'][0][:mask_length], skip_special_tokens=True)
+            original_summary = tokenizer.decode(batch['labels'][0][mask_length:], skip_special_tokens=True)
             print("Original story:", story_text)
             print("--------------------------------")
             print("Original summary:", original_summary)
