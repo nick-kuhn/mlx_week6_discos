@@ -620,7 +620,7 @@ def parse_args():
     parser.add_argument('--log_freq', type=int, default=50)
     parser.add_argument('--eval_freq', type=int, default=500)  # Evaluate every 500 steps
     parser.add_argument('--max_eval_batches', type=int, default=100)  # Limit eval to save time
-    parser.add_argument('--upload_checkpoints', action='store_true', default=False,
+    parser.add_argument('--upload_checkpoints', action='store_true', default=True,
                         help='Upload checkpoints to wandb as artifacts for remote backup')
     parser.add_argument('--checkpoint_upload_freq', type=int, default=2000,
                         help='Upload regular checkpoints every N steps (best models always uploaded)')

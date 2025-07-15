@@ -6,6 +6,7 @@ Usage:
     python script.py base
     python script.py base_vanilla
     python script.py finetuned --path /path/to/model
+    python script.py wandb
     
 """
 
@@ -16,6 +17,25 @@ from datasets import load_dataset
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import evaluate
+import wandb
+import os
+
+
+def download_wandb_model(artifact_path, local_dir="./wandb_models"):
+    """Download model from W&B artifact."""
+    print(f"Downloading model from W&B artifact: {artifact_path}")
+    
+    # Initialize wandb
+    wandb.init(project="model-evaluation", job_type="evaluation")
+    
+    # Download the artifact
+    artifact = wandb.use_artifact(artifact_path, type="lora_adapter")
+    artifact_dir = artifact.download(root=local_dir)
+    
+    wandb.finish()
+    
+    print(f"Model downloaded to: {artifact_dir}")
+    return artifact_dir
 
 
 def load_prerequisites(model_type, model_path=None):
@@ -32,6 +52,12 @@ def load_prerequisites(model_type, model_path=None):
         # qwen = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-0.6B-Base")
         model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-0.6B-Base")
         tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B-Base")   
+    elif model_type == "wandb":
+        # Download and load model from W&B artifact
+        artifact_path = "ntkuhn/summarization-finetuning/best_model_step_8000:latest"
+        model_path = download_wandb_model(artifact_path)
+        model = AutoModelForCausalLM.from_pretrained(model_path)
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
     else:  # finetuned
         # Load finetuned model
         model = AutoModelForCausalLM.from_pretrained(model_path)
@@ -156,12 +182,13 @@ Examples:
     python script.py                           # Use base model (default)
     python script.py --model_type base         # Use base model explicitly
     python script.py --model_type finetuned --path ./my-finetuned-model
+    python script.py --model_type wandb        # Use W&B artifact model
         """
     )
     
     parser.add_argument(
         "--model_type",
-        choices=["base", "finetuned", "base_vanilla"],
+        choices=["base", "finetuned", "base_vanilla", "wandb"],
         default="base",
         help="Type of model to evaluate (default: base)"
     )
