@@ -16,6 +16,7 @@ import torch.amp
 import peft
 
 from .dataset import TLDRDataset, tldr_collate_fn
+from .evaluate_model import get_rouge_score
 
 class SummarizationTrainer:
     def __init__(self, config):
@@ -432,9 +433,12 @@ class SummarizationTrainer:
                 # Don't evaluate entire val set every time (too expensive)
                 if num_batches >= self.config.max_eval_batches:
                     break
+
+                #get rouge score
+                rouge_scores = get_rouge_scores(predictions, references)
         
         avg_loss = total_loss / max(num_batches, 1)
-        return {'val_loss': avg_loss}
+        return {'val_loss': avg_loss, 'rouge_scores': rouge_scores}
         
     def train(self):
         """Main training loop."""
@@ -496,9 +500,12 @@ class SummarizationTrainer:
                 if self.global_step % self.config.eval_freq == 0:
                     eval_metrics = self.evaluate()
                     
+
+                    
                     if self.config.use_wandb:
                         wandb.log({
                             'eval/val_loss': eval_metrics['val_loss'],
+                            'eval/rouge-L': eval_metrics['rouge_scores']['rougeL'],
                             'global_step': self.global_step
                         })
                     
@@ -510,7 +517,9 @@ class SummarizationTrainer:
                     self.save_checkpoint(is_best=is_best)
                     
                     print(f"\n📊 Step {self.global_step} - Val Loss: {eval_metrics['val_loss']:.4f} {'🏆' if is_best else ''}")
-                
+                    #print main rougeL score
+                    print(f"🔍 ROUGE-L: {eval_metrics['rouge_scores']['rougeL']:.4f}")
+
                 # More frequent memory cleanup to prevent gradual accumulation
                 if self.global_step % 20 == 0:  # Increased frequency from 100 to 20
                     if torch.cuda.is_available():
