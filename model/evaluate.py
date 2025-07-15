@@ -2,6 +2,12 @@ from .dataset import TLDRDataset
 from torch.utils.data import DataLoader
 import torch
 
+def generate_prediction(model, tokenizer, text, mask_length):
+    inputs = tokenizer(text, return_tensors="pt")
+    outputs = model.generate(**inputs, do_sample=True, temperature=0.7)
+    return tokenizer.decode(outputs[0][mask_length:], skip_special_tokens=True).strip()
+
+
 def evaluate(model, tokenizer, val_dataset, device):
     model.eval()
     total_loss = 0
@@ -25,8 +31,6 @@ def evaluate(model, tokenizer, val_dataset, device):
 
 def get_examples(model, tokenizer, val_dataset, device, num_examples=5):
     model.eval()
-    total_loss = 0
-    total_tokens = 0
     #get pad token id
     pad_token_id = tokenizer.pad_token_id
     dataloader = DataLoader(val_dataset, batch_size=1, shuffle=True)
@@ -35,13 +39,20 @@ def get_examples(model, tokenizer, val_dataset, device, num_examples=5):
     generated_summaries = []
     with torch.no_grad():
         for batch in dataloader:
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            labels = batch["labels"].to(device)
-            outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
-            example_posts.append(tokenizer.decode(input_ids[0], skip_special_tokens=True))
-            provided_summaries.append(tokenizer.decode(labels[0], skip_special_tokens=True))
-            generated_summaries.append(tokenizer.decode(outputs.logits[0], skip_special_tokens=True))
+            #determine the length of masking in the labels
+            mask_length = (batch['labels'] == -100).sum()
+            print("Mask length:", mask_length)
+            
+            story_text = tokenizer.decode(batch['input_ids'][:mask_length], skip_special_tokens=True)
+            original_summary = tokenizer.decode(batch['labels'][mask_length:], skip_special_tokens=True)
+            print("Original story:", story_text)
+            print("--------------------------------")
+            print("Original summary:", original_summary)
+            prediction = generate_prediction(model, tokenizer, story_text, mask_length)
+            print("Prediction:", prediction)
+            example_posts.append(story_text)
+            provided_summaries.append(original_summary)
+            generated_summaries.append(prediction)
             if len(example_posts) >= num_examples:
                 break
     return example_posts, provided_summaries, generated_summaries
