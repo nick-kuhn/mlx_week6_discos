@@ -1,10 +1,12 @@
 from .dataset import TLDRDataset
 from torch.utils.data import DataLoader
 import torch
+import evaluate
 
-def generate_prediction(model, tokenizer, text, mask_length):
-    inputs = tokenizer(text, return_tensors="pt")
-    outputs = model.generate(**inputs, do_sample=True, temperature=0.7)
+def generate_prediction(model, tokenizer, text, mask_length, device):
+    inputs = tokenizer(text, return_tensors="pt").to(device)
+    with torch.no_grad():
+        outputs = model.generate(**inputs, do_sample=True, temperature=0.7, max_new_tokens=100)
     return tokenizer.decode(outputs[0][mask_length:], skip_special_tokens=True).strip()
 
 
@@ -53,7 +55,7 @@ def get_examples(model, tokenizer, val_dataset, device, num_examples=5, verbose=
             
             story_text = tokenizer.decode(batch['input_ids'][0][:mask_length], skip_special_tokens=True)
             original_summary = tokenizer.decode(batch['labels'][0][mask_length:], skip_special_tokens=True)
-            prediction = generate_prediction(model, tokenizer, story_text, mask_length)
+            prediction = generate_prediction(model, tokenizer, story_text, mask_length, device)
             
             if verbose:
                 print("Original story:", story_text)

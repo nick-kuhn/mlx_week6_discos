@@ -17,7 +17,7 @@ from accelerate import Accelerator
 import peft
 
 from .dataset import TLDRDataset, tldr_collate_fn
-from .evaluate_model import get_rouge_score, get_examples
+from .evaluate_model import get_rouge_scores, get_examples
 
 class SummarizationTrainer:
     def __init__(self, config):
@@ -54,151 +54,216 @@ class SummarizationTrainer:
         print(f"🔥 Mixed precision training: {'enabled' if self.use_amp else 'disabled'}")
         
     def setup_reward_model(self):
-        """Initialize reward model for evaluation."""
+        """Initialize reward model for evaluation with lazy loading."""
         print("🎯 Setting up reward model...")
         
-        # Load reward model and tokenizer
-        self.reward_model = AutoModelForSequenceClassification.from_pretrained(
-            "OpenAssistant/reward-model-deberta-v3-large-v2"
-        )
-        self.reward_tokenizer = AutoTokenizer.from_pretrained(
-            "OpenAssistant/reward-model-deberta-v3-large-v2"
-        )
+        # Store model names for lazy loading
+        self.reward_model_name = "OpenAssistant/reward-model-deberta-v3-large-v2"
+        self.baseline_model_name = self.config.model_name
         
-        # Keep a copy of the base model for baseline comparisons
-        self.baseline_model = AutoModelForCausalLM.from_pretrained(self.config.model_name)
-        if self.baseline_model.config.pad_token_id is None:
-            self.baseline_model.config.pad_token_id = self.tokenizer.eos_token_id
+        # Initialize as None - will be loaded when needed
+        self.reward_model = None
+        self.reward_tokenizer = None
+        self.baseline_model = None
         
-        # Move models to device
-        self.reward_model.to(self.device)
-        self.baseline_model.to(self.device)
-        
-        # Set to eval mode
-        self.reward_model.eval()
-        self.baseline_model.eval()
-        
-        print("✅ Reward model setup complete")
+        print("✅ Reward model setup complete (lazy loading enabled)")
+    
+    def load_reward_model(self):
+        """Lazy load reward model when needed."""
+        if self.reward_model is None:
+            print("🔄 Loading reward model...")
+            self.reward_model = AutoModelForSequenceClassification.from_pretrained(
+                self.reward_model_name
+            )
+            self.reward_tokenizer = AutoTokenizer.from_pretrained(
+                self.reward_model_name
+            )
+            self.reward_model.to(self.device)
+            self.reward_model.eval()
+            print("✅ Reward model loaded")
+        return self.reward_model, self.reward_tokenizer
+    
+    def load_baseline_model(self):
+        """Lazy load baseline model when needed."""
+        if self.baseline_model is None:
+            print("🔄 Loading baseline model...")
+            self.baseline_model = AutoModelForCausalLM.from_pretrained(self.baseline_model_name)
+            if self.baseline_model.config.pad_token_id is None:
+                self.baseline_model.config.pad_token_id = self.tokenizer.eos_token_id
+            self.baseline_model.to(self.device)
+            self.baseline_model.eval()
+            print("✅ Baseline model loaded")
+        return self.baseline_model
+    
+    def unload_reward_models(self):
+        """Unload reward models to free memory."""
+        if self.reward_model is not None:
+            del self.reward_model
+            del self.reward_tokenizer
+            self.reward_model = None
+            self.reward_tokenizer = None
+            
+        if self.baseline_model is not None:
+            del self.baseline_model
+            self.baseline_model = None
+            
+        torch.cuda.empty_cache()
+        print("🧹 Reward models unloaded from memory")
         
     def calculate_reward_scores(self, reward_inputs):
         """Calculate reward scores for given inputs using the reward model."""
+        reward_model, reward_tokenizer = self.load_reward_model()
         rewards = []
         
         with torch.no_grad():
             for text in reward_inputs:
-                inputs = self.reward_tokenizer(
-                    text, 
-                    return_tensors="pt", 
-                    truncation=True, 
-                    max_length=512
-                ).to(self.device)
-                
-                outputs = self.reward_model(**inputs)
-                # The reward model outputs logits, score is the first logit
-                score = outputs.logits[0].item()
-                rewards.append(score)
+                try:
+                    inputs = reward_tokenizer(
+                        text, 
+                        return_tensors="pt", 
+                        truncation=True, 
+                        max_length=512
+                    ).to(self.device)
+                    
+                    outputs = reward_model(**inputs)
+                    # The reward model outputs logits, score is the first logit
+                    score = outputs.logits[0].item()
+                    rewards.append(score)
+                except Exception as e:
+                    print(f"⚠️ Error calculating reward score: {e}")
+                    rewards.append(0.0)  # Fallback score
         
         return rewards
     
     def generate_summary(self, model, prompt_text):
         """Generate a summary using the given model."""
-        inputs = self.tokenizer(
-            prompt_text, 
-            return_tensors="pt", 
-            truncation=True, 
-            max_length=512
-        ).to(self.device)
-        
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=100,
-                do_sample=True,
-                temperature=0.7,
-                pad_token_id=self.tokenizer.eos_token_id
-            )
+        try:
+            inputs = self.tokenizer(
+                prompt_text, 
+                return_tensors="pt", 
+                truncation=True, 
+                max_length=512
+            ).to(self.device)
             
-            # Extract only the generated part (excluding the input prompt)
-            generated_text = self.tokenizer.decode(
-                outputs[0][inputs['input_ids'].shape[1]:], 
-                skip_special_tokens=True
-            ).strip()
-            
-        return generated_text
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=100,
+                    do_sample=True,
+                    temperature=0.7,
+                    pad_token_id=self.tokenizer.eos_token_id
+                )
+                
+                # Extract only the generated part (excluding the input prompt)
+                generated_text = self.tokenizer.decode(
+                    outputs[0][inputs['input_ids'].shape[1]:], 
+                    skip_special_tokens=True
+                ).strip()
+                
+            return generated_text
+        except Exception as e:
+            print(f"⚠️ Error generating summary: {e}")
+            return "Error generating summary"
     
     def evaluate_with_reward_model(self, num_samples=10):
         """Evaluate model using reward model comparison."""
         print("🎯 Running reward model evaluation...")
         
-        # Get sample data for evaluation
-        sample_data = []
-        for i, batch in enumerate(self.val_loader):
-            if i >= num_samples:
-                break
-            if batch is None:
-                continue
+        try:
+            # Get sample data for evaluation
+            sample_data = []
+            for i, batch in enumerate(self.val_loader):
+                if i >= num_samples:
+                    break
+                if batch is None:
+                    continue
+                    
+                # Get the prompt (input text before summary)
+                mask_length = (batch['labels'] == -100).sum().item()
+                prompt_text = self.tokenizer.decode(
+                    batch['input_ids'][0][:mask_length], 
+                    skip_special_tokens=True
+                )
                 
-            # Get the prompt (input text before summary)
-            mask_length = (batch['labels'] == -100).sum().item()
-            prompt_text = self.tokenizer.decode(
-                batch['input_ids'][0][:mask_length], 
-                skip_special_tokens=True
-            )
+                # Get reference summary
+                reference_summary = self.tokenizer.decode(
+                    batch['labels'][0][mask_length:], 
+                    skip_special_tokens=True
+                )
+                
+                sample_data.append({
+                    'prompt': prompt_text,
+                    'reference': reference_summary
+                })
             
-            # Get reference summary
-            reference_summary = self.tokenizer.decode(
-                batch['labels'][0][mask_length:], 
-                skip_special_tokens=True
-            )
+            if not sample_data:
+                print("⚠️ No samples found for reward evaluation")
+                return {
+                    'reward_finetuned_avg': 0.0,
+                    'reward_baseline_avg': 0.0,
+                    'reward_improvement': 0.0,
+                    'reward_improvement_std': 0.0
+                }
             
-            sample_data.append({
-                'prompt': prompt_text,
-                'reference': reference_summary
-            })
-        
-        # Generate summaries with both models
-        finetuned_summaries = []
-        baseline_summaries = []
-        
-        for sample in sample_data:
-            # Generate with current finetuned model
-            finetuned_summary = self.generate_summary(self.model, sample['prompt'])
-            finetuned_summaries.append(finetuned_summary)
+            # Load baseline model for summary generation
+            baseline_model = self.load_baseline_model()
             
-            # Generate with baseline model
-            baseline_summary = self.generate_summary(self.baseline_model, sample['prompt'])
-            baseline_summaries.append(baseline_summary)
+            # Generate summaries with both models
+            finetuned_summaries = []
+            baseline_summaries = []
+            
+            for sample in sample_data:
+                # Generate with current finetuned model
+                finetuned_summary = self.generate_summary(self.model, sample['prompt'])
+                finetuned_summaries.append(finetuned_summary)
+                
+                # Generate with baseline model
+                baseline_summary = self.generate_summary(baseline_model, sample['prompt'])
+                baseline_summaries.append(baseline_summary)
+            
+            # Prepare inputs for reward model
+            finetuned_inputs = [
+                f"{sample['prompt']} {summary}" 
+                for sample, summary in zip(sample_data, finetuned_summaries)
+            ]
+            baseline_inputs = [
+                f"{sample['prompt']} {summary}" 
+                for sample, summary in zip(sample_data, baseline_summaries)
+            ]
+            
+            # Calculate rewards
+            finetuned_rewards = self.calculate_reward_scores(finetuned_inputs)
+            baseline_rewards = self.calculate_reward_scores(baseline_inputs)
+            
+            # Calculate metrics
+            reward_improvements = [f - b for f, b in zip(finetuned_rewards, baseline_rewards)]
+            
+            metrics = {
+                'reward_finetuned_avg': np.mean(finetuned_rewards),
+                'reward_baseline_avg': np.mean(baseline_rewards),
+                'reward_improvement': np.mean(reward_improvements),
+                'reward_improvement_std': np.std(reward_improvements)
+            }
+            
+            print(f"📊 Reward Evaluation Results:")
+            print(f"   Finetuned avg: {metrics['reward_finetuned_avg']:.4f}")
+            print(f"   Baseline avg: {metrics['reward_baseline_avg']:.4f}")
+            print(f"   Improvement: {metrics['reward_improvement']:.4f} ± {metrics['reward_improvement_std']:.4f}")
+            
+            return metrics
+            
+        except Exception as e:
+            print(f"⚠️ Error during reward evaluation: {e}")
+            return {
+                'reward_finetuned_avg': 0.0,
+                'reward_baseline_avg': 0.0,
+                'reward_improvement': 0.0,
+                'reward_improvement_std': 0.0
+            }
         
-        # Prepare inputs for reward model
-        finetuned_inputs = [
-            f"{sample['prompt']} {summary}" 
-            for sample, summary in zip(sample_data, finetuned_summaries)
-        ]
-        baseline_inputs = [
-            f"{sample['prompt']} {summary}" 
-            for sample, summary in zip(sample_data, baseline_summaries)
-        ]
-        
-        # Calculate rewards
-        finetuned_rewards = self.calculate_reward_scores(finetuned_inputs)
-        baseline_rewards = self.calculate_reward_scores(baseline_inputs)
-        
-        # Calculate metrics
-        reward_improvements = [f - b for f, b in zip(finetuned_rewards, baseline_rewards)]
-        
-        metrics = {
-            'reward_finetuned_avg': np.mean(finetuned_rewards),
-            'reward_baseline_avg': np.mean(baseline_rewards),
-            'reward_improvement': np.mean(reward_improvements),
-            'reward_improvement_std': np.std(reward_improvements)
-        }
-        
-        print(f"📊 Reward Evaluation Results:")
-        print(f"   Finetuned avg: {metrics['reward_finetuned_avg']:.4f}")
-        print(f"   Baseline avg: {metrics['reward_baseline_avg']:.4f}")
-        print(f"   Improvement: {metrics['reward_improvement']:.4f} ± {metrics['reward_improvement_std']:.4f}")
-        
-        return metrics
+        finally:
+            # Always clean up memory after evaluation
+            self.unload_reward_models()
         
     def setup_model(self):
         """Initialize model and tokenizer."""
@@ -599,7 +664,7 @@ class SummarizationTrainer:
         )
         
         # Calculate ROUGE scores
-        rouge_scores = get_rouge_score(predictions, references)
+        rouge_scores = get_rouge_scores(predictions, references)
         
         # Calculate reward model metrics if enabled
         reward_metrics = {}
@@ -838,13 +903,13 @@ def parse_args():
                         help='Upload regular checkpoints every N steps (best models always uploaded)')
     parser.add_argument('--delete_after_upload', action='store_true', default=True,
                         help='Delete local checkpoints after successful upload to save disk space')
-    parser.add_argument('--verbose_evals', action='store_true', default=False,
+    parser.add_argument('--verbose-evals', action='store_true', default=False,
                         help='Show detailed evaluation output including original prompts during training')
     parser.add_argument('--reward-evaluation', action='store_true', default=False,
                         help='Enable reward model evaluation during training (compares finetuned vs baseline)')
     
     # Resume training
-    parser.add_argument('--resume_from_checkpoint', type=str, default=None)
+    parser.add_argument('--resume-from-checkpoint', type=str, default=None)
     
     return parser.parse_args()
 
