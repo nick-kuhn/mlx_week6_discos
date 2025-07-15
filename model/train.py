@@ -168,7 +168,7 @@ class SummarizationTrainer:
         checkpoint = {
             'epoch': self.current_epoch,
             'global_step': self.global_step,
-            'lora_state_dict': self.model.state_dict(),  # This contains only LoRA parameters
+            'lora_state_dict': {k: v for k, v in self.model.state_dict().items() if 'lora_' in k},  # Only LoRA parameters
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'best_val_loss': self.best_val_loss,
@@ -196,7 +196,7 @@ class SummarizationTrainer:
                 torch.save(checkpoint, best_path)
                 print(f"💾 Best model saved at step {self.global_step} ({best_path.stat().st_size / 1e9:.1f}GB)")
                 
-                upload_success = self.upload_checkpoint_to_wandb(best_path, f"best_model_step_{self.global_step}", is_best=True)
+                upload_success = self.upload_checkpoint_to_wandb(best_path, f"best_finetuned_model", is_best=True)
                 
                 if upload_success:
                     # Track this file as currently uploading
@@ -223,7 +223,7 @@ class SummarizationTrainer:
                 self.global_step % self.config.checkpoint_upload_freq == 0):
                 
                 print(f"💾 Temporary checkpoint saved ({temp_checkpoint_path.stat().st_size / 1e9:.1f}GB)")
-                upload_success = self.upload_checkpoint_to_wandb(temp_checkpoint_path, f"checkpoint_step_{self.global_step}", is_best=False)
+                upload_success = self.upload_checkpoint_to_wandb(temp_checkpoint_path, f"checkpoint_finetuned_model", is_best=False)
                 
                 if upload_success:
                     print(f"✅ Upload successful")

@@ -106,9 +106,9 @@ def load_prerequisites(model_type, model_path=None):
                     model.load_state_dict(checkpoint['lora_state_dict'])
                     print("✅ Loaded LoRA adapter from checkpoint")
                 elif 'model_state_dict' in checkpoint:
-                    # Old format with full model
-                    model.load_state_dict(checkpoint['model_state_dict'])
-                    print("✅ Loaded full model from checkpoint")
+                    # Old format with full model - load with strict=False to handle vocab size mismatch
+                    model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+                    print("✅ Loaded full model from checkpoint (with vocab size adjustment)")
                 else:
                     raise ValueError("Checkpoint format not recognized")
             else:
