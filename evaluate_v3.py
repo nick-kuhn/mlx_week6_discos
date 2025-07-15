@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 from datasets import load_dataset
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftModel
 import evaluate
 import wandb
 import os
@@ -53,11 +54,20 @@ def load_prerequisites(model_type, model_path=None):
         model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-0.6B-Base")
         tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B-Base")   
     elif model_type == "wandb":
-        # Download and load model from W&B artifact
+        # Download and load LoRA adapter from W&B artifact
         artifact_path = "ntkuhn/summarization-finetuning/best_model_step_8000:latest"
-        model_path = download_wandb_model(artifact_path)
-        model = AutoModelForCausalLM.from_pretrained(model_path)
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        adapter_path = download_wandb_model(artifact_path)
+        
+        # Load base model first (need to determine which base model was used)
+        # This should match the base model used during training
+        base_model_name = "Qwen/Qwen3-0.6B-Base"  # Update this if different
+        print(f"Loading base model: {base_model_name}")
+        model = AutoModelForCausalLM.from_pretrained(base_model_name)
+        tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+        
+        # Load LoRA adapter on top of base model
+        print(f"Loading LoRA adapter from: {adapter_path}")
+        model = PeftModel.from_pretrained(model, adapter_path)
     else:  # finetuned
         # Load finetuned model
         model = AutoModelForCausalLM.from_pretrained(model_path)
