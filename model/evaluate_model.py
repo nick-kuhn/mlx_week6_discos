@@ -38,7 +38,7 @@ def get_rouge_scores(predictions, references):
     )
     return scores
 
-def get_examples(model, tokenizer, val_dataset, device, num_examples=5):
+def get_examples(model, tokenizer, val_dataset, device, num_examples=5, verbose=True):
     model.eval()
     dataloader = DataLoader(val_dataset, batch_size=1, shuffle=True)
     example_posts = []
@@ -48,15 +48,21 @@ def get_examples(model, tokenizer, val_dataset, device, num_examples=5):
         for batch in dataloader:
             #determine the length of masking in the labels
             mask_length = (batch['labels'] == -100).sum()
-            print("Mask length:", mask_length)
+            if verbose:
+                print("Mask length:", mask_length)
             
             story_text = tokenizer.decode(batch['input_ids'][0][:mask_length], skip_special_tokens=True)
             original_summary = tokenizer.decode(batch['labels'][0][mask_length:], skip_special_tokens=True)
-            print("Original story:", story_text)
-            print("--------------------------------")
-            print("Original summary:", original_summary)
             prediction = generate_prediction(model, tokenizer, story_text, mask_length)
-            print("Prediction:", prediction)
+            
+            if verbose:
+                print("Original story:", story_text)
+                print("--------------------------------")
+                print("Original summary:", original_summary)
+                print("Prediction:", prediction)
+            else:
+                print(f"Generated summary {len(generated_summaries) + 1}:", prediction)
+            
             example_posts.append(story_text)
             provided_summaries.append(original_summary)
             generated_summaries.append(prediction)

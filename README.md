@@ -1,5 +1,11 @@
 # mlx_week6_discos
 
+## Training
+Train the model with reward evaluation:
+`uv run -m model.train --reward-evaluation --verbose_evals`
+If this is to gpu-heavy, drop the reward evaluation:
+`uv run -m model.train --verbose_evals`
+
 ### To Load the reddit TLDR summarization dataset:
 ```
 from transformers import AutoTokenizer, AutoModelForCausalLM

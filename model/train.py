@@ -10,13 +10,14 @@ import time
 from datetime import datetime
 from tqdm import tqdm
 import numpy as np
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification
 import os
 import torch.amp
+from accelerate import Accelerator
 import peft
 
 from .dataset import TLDRDataset, tldr_collate_fn
-from .evaluate_model import get_rouge_score
+from .evaluate_model import get_rouge_score, get_examples
 
 class SummarizationTrainer:
     def __init__(self, config):
@@ -31,20 +32,173 @@ class SummarizationTrainer:
         self.current_upload_file = None
         
         # Initialize mixed precision scaler
-        self.use_amp = getattr(config, 'use_amp', True) and torch.cuda.is_available()
-        self.scaler = torch.amp.GradScaler('cuda') if self.use_amp else None
+        self.accelerator = Accelerator(mixed_precision = "fp16" if config.use_amp else "no")
+        self.use_amp = getattr(config, 'use_amp', True) #and torch.cuda.is_available() #handled by accelerator
+        self.scaler = self.accelerator.scaler if self.use_amp else None
                 
         # Initialize model and tokenizer
         self.setup_model()
         self.setup_data()
         self.setup_training()
         
+        # Initialize reward model if enabled
+        if self.config.reward_evaluation:
+            self.setup_reward_model()
+        
         # Training state
         self.global_step = 0
         self.current_epoch = 0
         self.best_val_loss = float('inf')
+        self.best_reward_improvement = 0.0  # Track best reward improvement (starts at baseline)
         
         print(f"🔥 Mixed precision training: {'enabled' if self.use_amp else 'disabled'}")
+        
+    def setup_reward_model(self):
+        """Initialize reward model for evaluation."""
+        print("🎯 Setting up reward model...")
+        
+        # Load reward model and tokenizer
+        self.reward_model = AutoModelForSequenceClassification.from_pretrained(
+            "OpenAssistant/reward-model-deberta-v3-large-v2"
+        )
+        self.reward_tokenizer = AutoTokenizer.from_pretrained(
+            "OpenAssistant/reward-model-deberta-v3-large-v2"
+        )
+        
+        # Keep a copy of the base model for baseline comparisons
+        self.baseline_model = AutoModelForCausalLM.from_pretrained(self.config.model_name)
+        if self.baseline_model.config.pad_token_id is None:
+            self.baseline_model.config.pad_token_id = self.tokenizer.eos_token_id
+        
+        # Move models to device
+        self.reward_model.to(self.device)
+        self.baseline_model.to(self.device)
+        
+        # Set to eval mode
+        self.reward_model.eval()
+        self.baseline_model.eval()
+        
+        print("✅ Reward model setup complete")
+        
+    def calculate_reward_scores(self, reward_inputs):
+        """Calculate reward scores for given inputs using the reward model."""
+        rewards = []
+        
+        with torch.no_grad():
+            for text in reward_inputs:
+                inputs = self.reward_tokenizer(
+                    text, 
+                    return_tensors="pt", 
+                    truncation=True, 
+                    max_length=512
+                ).to(self.device)
+                
+                outputs = self.reward_model(**inputs)
+                # The reward model outputs logits, score is the first logit
+                score = outputs.logits[0].item()
+                rewards.append(score)
+        
+        return rewards
+    
+    def generate_summary(self, model, prompt_text):
+        """Generate a summary using the given model."""
+        inputs = self.tokenizer(
+            prompt_text, 
+            return_tensors="pt", 
+            truncation=True, 
+            max_length=512
+        ).to(self.device)
+        
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=100,
+                do_sample=True,
+                temperature=0.7,
+                pad_token_id=self.tokenizer.eos_token_id
+            )
+            
+            # Extract only the generated part (excluding the input prompt)
+            generated_text = self.tokenizer.decode(
+                outputs[0][inputs['input_ids'].shape[1]:], 
+                skip_special_tokens=True
+            ).strip()
+            
+        return generated_text
+    
+    def evaluate_with_reward_model(self, num_samples=10):
+        """Evaluate model using reward model comparison."""
+        print("🎯 Running reward model evaluation...")
+        
+        # Get sample data for evaluation
+        sample_data = []
+        for i, batch in enumerate(self.val_loader):
+            if i >= num_samples:
+                break
+            if batch is None:
+                continue
+                
+            # Get the prompt (input text before summary)
+            mask_length = (batch['labels'] == -100).sum().item()
+            prompt_text = self.tokenizer.decode(
+                batch['input_ids'][0][:mask_length], 
+                skip_special_tokens=True
+            )
+            
+            # Get reference summary
+            reference_summary = self.tokenizer.decode(
+                batch['labels'][0][mask_length:], 
+                skip_special_tokens=True
+            )
+            
+            sample_data.append({
+                'prompt': prompt_text,
+                'reference': reference_summary
+            })
+        
+        # Generate summaries with both models
+        finetuned_summaries = []
+        baseline_summaries = []
+        
+        for sample in sample_data:
+            # Generate with current finetuned model
+            finetuned_summary = self.generate_summary(self.model, sample['prompt'])
+            finetuned_summaries.append(finetuned_summary)
+            
+            # Generate with baseline model
+            baseline_summary = self.generate_summary(self.baseline_model, sample['prompt'])
+            baseline_summaries.append(baseline_summary)
+        
+        # Prepare inputs for reward model
+        finetuned_inputs = [
+            f"{sample['prompt']} {summary}" 
+            for sample, summary in zip(sample_data, finetuned_summaries)
+        ]
+        baseline_inputs = [
+            f"{sample['prompt']} {summary}" 
+            for sample, summary in zip(sample_data, baseline_summaries)
+        ]
+        
+        # Calculate rewards
+        finetuned_rewards = self.calculate_reward_scores(finetuned_inputs)
+        baseline_rewards = self.calculate_reward_scores(baseline_inputs)
+        
+        # Calculate metrics
+        reward_improvements = [f - b for f, b in zip(finetuned_rewards, baseline_rewards)]
+        
+        metrics = {
+            'reward_finetuned_avg': np.mean(finetuned_rewards),
+            'reward_baseline_avg': np.mean(baseline_rewards),
+            'reward_improvement': np.mean(reward_improvements),
+            'reward_improvement_std': np.std(reward_improvements)
+        }
+        
+        print(f"📊 Reward Evaluation Results:")
+        print(f"   Finetuned avg: {metrics['reward_finetuned_avg']:.4f}")
+        print(f"   Baseline avg: {metrics['reward_baseline_avg']:.4f}")
+        print(f"   Improvement: {metrics['reward_improvement']:.4f} ± {metrics['reward_improvement_std']:.4f}")
+        
+        return metrics
         
     def setup_model(self):
         """Initialize model and tokenizer."""
@@ -433,12 +587,30 @@ class SummarizationTrainer:
                 # Don't evaluate entire val set every time (too expensive)
                 if num_batches >= self.config.max_eval_batches:
                     break
-
-                #get rouge score
-                rouge_scores = get_rouge_scores(predictions, references)
+        
+        # Generate examples for ROUGE score calculation
+        _, references, predictions = get_examples(
+            self.model, 
+            self.tokenizer, 
+            self.val_dataset, 
+            self.device, 
+            num_examples=10,  # Use more examples for better ROUGE calculation
+            verbose=self.config.verbose_evals
+        )
+        
+        # Calculate ROUGE scores
+        rouge_scores = get_rouge_score(predictions, references)
+        
+        # Calculate reward model metrics if enabled
+        reward_metrics = {}
+        if self.config.reward_evaluation:
+            reward_metrics = self.evaluate_with_reward_model(num_samples=5)  # Use fewer samples to save time
         
         avg_loss = total_loss / max(num_batches, 1)
-        return {'val_loss': avg_loss, 'rouge_scores': rouge_scores}
+        eval_results = {'val_loss': avg_loss, 'rouge_scores': rouge_scores}
+        eval_results.update(reward_metrics)
+        
+        return eval_results
         
     def train(self):
         """Main training loop."""
@@ -503,22 +675,43 @@ class SummarizationTrainer:
 
                     
                     if self.config.use_wandb:
-                        wandb.log({
+                        log_dict = {
                             'eval/val_loss': eval_metrics['val_loss'],
                             'eval/rouge-L': eval_metrics['rouge_scores']['rougeL'],
                             'global_step': self.global_step
-                        })
+                        }
+                        
+                        # Add reward metrics if available
+                        if self.config.reward_evaluation and 'reward_improvement' in eval_metrics:
+                            log_dict.update({
+                                'eval/reward_improvement': eval_metrics['reward_improvement'],
+                                'eval/reward_finetuned_avg': eval_metrics['reward_finetuned_avg'],
+                                'eval/reward_baseline_avg': eval_metrics['reward_baseline_avg']
+                            })
+                        
+                        wandb.log(log_dict)
                     
-                    # Save checkpoint
-                    is_best = eval_metrics['val_loss'] < self.best_val_loss
-                    if is_best:
-                        self.best_val_loss = eval_metrics['val_loss']
+                    # Save checkpoint - use reward improvement if available, otherwise val_loss
+                    if self.config.reward_evaluation and 'reward_improvement' in eval_metrics:
+                        is_best = eval_metrics['reward_improvement'] > self.best_reward_improvement
+                        if is_best:
+                            self.best_reward_improvement = eval_metrics['reward_improvement']
+                    else:
+                        is_best = eval_metrics['val_loss'] < self.best_val_loss
+                        if is_best:
+                            self.best_val_loss = eval_metrics['val_loss']
                     
                     self.save_checkpoint(is_best=is_best)
                     
                     print(f"\n📊 Step {self.global_step} - Val Loss: {eval_metrics['val_loss']:.4f} {'🏆' if is_best else ''}")
                     #print main rougeL score
                     print(f"🔍 ROUGE-L: {eval_metrics['rouge_scores']['rougeL']:.4f}")
+                    
+                    # Print reward metrics if available
+                    if self.config.reward_evaluation and 'reward_improvement' in eval_metrics:
+                        best_indicator = '🏆' if is_best else ''
+                        print(f"🎯 Reward Improvement: {eval_metrics['reward_improvement']:.4f} {best_indicator}")
+                        print(f"📈 Best Reward Improvement: {self.best_reward_improvement:.4f}")
 
                 # More frequent memory cleanup to prevent gradual accumulation
                 if self.global_step % 20 == 0:  # Increased frequency from 100 to 20
@@ -548,12 +741,22 @@ class SummarizationTrainer:
             # Final epoch evaluation
             eval_metrics = self.evaluate()
             if self.config.use_wandb:
-                wandb.log({
+                epoch_log_dict = {
                     'epoch/train_loss': avg_epoch_loss,
                     'epoch/val_loss': eval_metrics['val_loss'],
                     'epoch/epoch': epoch,
                     'global_step': self.global_step
-                })
+                }
+                
+                # Add reward metrics if available
+                if self.config.reward_evaluation and 'reward_improvement' in eval_metrics:
+                    epoch_log_dict.update({
+                        'epoch/reward_improvement': eval_metrics['reward_improvement'],
+                        'epoch/reward_finetuned_avg': eval_metrics['reward_finetuned_avg'],
+                        'epoch/reward_baseline_avg': eval_metrics['reward_baseline_avg']
+                    })
+                
+                wandb.log(epoch_log_dict)
             
             # Clear tensor cache at end of epoch to prevent memory accumulation
             self.clear_tensor_cache()
@@ -635,6 +838,10 @@ def parse_args():
                         help='Upload regular checkpoints every N steps (best models always uploaded)')
     parser.add_argument('--delete_after_upload', action='store_true', default=True,
                         help='Delete local checkpoints after successful upload to save disk space')
+    parser.add_argument('--verbose_evals', action='store_true', default=False,
+                        help='Show detailed evaluation output including original prompts during training')
+    parser.add_argument('--reward-evaluation', action='store_true', default=False,
+                        help='Enable reward model evaluation during training (compares finetuned vs baseline)')
     
     # Resume training
     parser.add_argument('--resume_from_checkpoint', type=str, default=None)
