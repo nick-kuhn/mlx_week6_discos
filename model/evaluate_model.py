@@ -29,6 +29,15 @@ def evaluate(model, tokenizer, val_dataset, device):
         "loss": total_loss / total_tokens,
     }
 
+def get_rouge_scores(predictions, references):
+    """Get ROUGE scores for a list of stories and summaries."""
+    rouge_metric = evaluate.load("rouge")
+    scores = rouge_metric.compute(
+        predictions=predictions,
+        references=references,
+    )
+    return scores
+
 def get_examples(model, tokenizer, val_dataset, device, num_examples=5):
     model.eval()
     dataloader = DataLoader(val_dataset, batch_size=1, shuffle=True)
