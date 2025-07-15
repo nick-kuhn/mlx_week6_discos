@@ -610,8 +610,8 @@ def parse_args():
     # Data arguments
     parser.add_argument('--num_workers', type=int, default=0,
                         help='Number of worker processes for data loading (set to 0 for Windows compatibility)')
-    parser.add_argument('--train_path', type=str, required=True, default='CarperAI/TLDR-dataset')
-    parser.add_argument('--val_path', type=str, required=True, default='CarperAI/TLDR-dataset')
+    parser.add_argument('--train_path', type=str, required=False, default='CarperAI/openai_summarize_tldr')
+    parser.add_argument('--val_path', type=str, required=False, default='CarperAI/openai_summarize_tldr')
     
     # Logging and checkpointing
     parser.add_argument('--use_wandb', action='store_true', default=True)
