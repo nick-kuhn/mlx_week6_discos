@@ -8,6 +8,7 @@ resolution-markers = [
     "python_full_version == '3.11.*' and sys_platform != 'linux'",
     "python_full_version < '3.11' and sys_platform == 'linux'",
     "python_full_version < '3.11' and sys_platform != 'linux'",
+<<<<<<< Updated upstream
 ]
 
 [[package]]
@@ -27,6 +28,8 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/bd/c2/b9e33ad13232606dded4c546e654fb06a15f1dbcbd95d81c9f9dd3ccc771/accelerate-1.8.1.tar.gz", hash = "sha256:f60df931671bc4e75077b852990469d4991ce8bd3a58e72375c3c95132034db9", size = 380872, upload-time = "2025-06-20T15:36:14.618Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/91/d9/e044c9d42d8ad9afa96533b46ecc9b7aea893d362b3c52bd78fb9fe4d7b3/accelerate-1.8.1-py3-none-any.whl", hash = "sha256:c47b8994498875a2b1286e945bd4d20e476956056c7941d512334f4eb44ff991", size = 365338, upload-time = "2025-06-20T15:36:12.71Z" },
+=======
+>>>>>>> Stashed changes
 ]
 
 [[package]]
@@ -1043,6 +1046,7 @@ wheels = [
 ]
 
 [[package]]
+<<<<<<< Updated upstream
 name = "peft"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1065,6 +1069,8 @@ wheels = [
 ]
 
 [[package]]
+=======
+>>>>>>> Stashed changes
 name = "platformdirs"
 version = "4.3.8"
 source = { registry = "https://pypi.org/simple" }
@@ -1177,6 +1183,7 @@ wheels = [
 ]
 
 [[package]]
+<<<<<<< Updated upstream
 name = "psutil"
 version = "7.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1192,6 +1199,8 @@ wheels = [
 ]
 
 [[package]]
+=======
+>>>>>>> Stashed changes
 name = "pyarrow"
 version = "20.0.0"
 source = { registry = "https://pypi.org/simple" }

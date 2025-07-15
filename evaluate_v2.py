@@ -1,12 +1,16 @@
 import argparse
-
+import evaluate
 import torch
-from datasets import load_dataset, load_metric
+from datasets import load_dataset
 from tqdm import tqdm
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from transformers import (
+    AutoModelForCausalLM,
+    AutoModelForSequenceClassification,
+    AutoTokenizer,
+)
 
 """
-Module for evaluating RLHF text summarizer: 
+Module for evaluating RLHF text summarizer
 
 """
 
@@ -14,7 +18,7 @@ Module for evaluating RLHF text summarizer:
 """ 
 LOAD PREREQUISITES 
 
-1. Load fine-tuned model 
+1. Load fine_tuned_model 
 2. Load tokeniser 
 3. Load the TL:DR dataset
 4. Load the ROUGE metric calculator from a library 
@@ -22,17 +26,32 @@ LOAD PREREQUISITES
 """
 
 
-def load_prerequisites(model_path):
-    # Load fine-tuned model
-    model = AutoModelForSequenceClassification.from_pretrained(model_path)
+def load_finetune_model(model_path):
+    # Load fine-tuned fine_tuned_model
+    fine_tuned_model = AutoModelForSequenceClassification.from_pretrained(model_path)
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     # Load the TL:DR dataset
-    dataset = load_dataset("tldr_news", split="test")
-    # Load the ROUGE metric calculator
-    rouge_metric = load_metric("rouge")
-    return model, tokenizer, dataset, rouge_metric
+    dataset = load_dataset('CarperAI/openai_summarize_tldr', split="test")
+    rouge_metric = evaluate.load("rouge")
+    return fine_tuned_model, tokenizer, dataset, rouge_metric
 
+'''
+LOAD BASE MODEL and PREREQ
+function to load base model
+
+1. Load base Qwen/Qwen3-0.6B-Base
+2. Load tokeniser Qwen/Qwen3-0.6B-Base
+3. Load the TL:DR dataset
+4. Load the ROUGE metric calculator from a library 
+'''
+
+def load_base_model():
+    base_model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-0.6B-Base")
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B-Base")
+    dataset = load_dataset('CarperAI/openai_summarize_tldr', split="test")
+    rouge_metric = evaluate.load("rouge")
+    return base_model, tokenizer, dataset, rouge_metric
 
 """
 PREPARE LISTS  
@@ -55,10 +74,10 @@ A function to iterate through
 each item in the TLDR test set one by one 
 For each item: 
 1. take the post that neeeds to be summarized
-2. use fine-tuned model to generate a summary 
+2. use fine-tuned fine_tuned_model to generate a summary 
 3. clean up the generated summary by 
 converting it from token IDs back to readable text 
-4. Add the summary created by model to list of generated summaries 
+4. Add the summary created by fine_tuned_model to list of generated summaries 
 5. Add the originsal, human-written 
 sumamary to the list of reference summaries 
  
@@ -66,14 +85,14 @@ sumamary to the list of reference summaries
 
 
 def generate_summaries(
-    model, tokenizer, dataset, generated_summaries, reference_summaries
+    fine_tuned_model, tokenizer, dataset, generated_summaries, reference_summaries
 ):
     for item in tqdm(dataset):
         post = item["post"]
         # Generate summary
         inputs = tokenizer(post, return_tensors="pt", max_length=512, truncation=True)
         with torch.no_grad():
-            summary_ids = model.generate(
+            summary_ids = fine_tuned_model.generate(
                 inputs["input_ids"],
                 max_length=150,
                 min_length=40,
@@ -136,18 +155,42 @@ def human_sense_check(dataset, generated_summaries):
         print(f"Model Summary:\n{generated_summaries[idx]}")
 
 
+"""
+Main Function: 
+1. give user option in terminal to load finetuned model ( and request path) or load base model 
+2. run evaluation on selected model
+    
+"""
+
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate RLHF text summarizer.")
+    parser = argparse.ArgumentParser(
+        description="Evaluate RLHF text summarizer models."
+    )
     parser.add_argument(
-        "--model_path", type=str, required=True, help="Path to the fine-tuned model."
+        "--model_type",
+        type=str,
+        choices=["finetuned", "base"],
+        required=True,
+        help="Type of model to evaluate: 'finetuned' or 'base'.",
+    )
+    parser.add_argument(
+        "--model_path",
+        type=str,
+        help="Path to the fine-tuned model (required if --model_type is 'finetuned').",
     )
     args = parser.parse_args()
 
-    model, tokenizer, dataset, rouge_metric = load_prerequisites(args.model_path)
+    if args.model_type == "finetuned":
+        if not args.model_path:
+            parser.error("--model_path is required for 'finetuned' model_type.")
+        model, tokenizer, dataset, rouge_metric = load_finetune_model(args.model_path)
+        print(f"Evaluating fine-tuned model from: {args.model_path}")
+    elif args.model_type == "base":
+        model, tokenizer, dataset, rouge_metric = load_base_model()
+        print("Evaluating base model.")
+
     generated_summaries, reference_summaries = prepare_lists()
-    generate_summaries(
-        model, tokenizer, dataset, generated_summaries, reference_summaries
-    )
+    generate_summaries(model, tokenizer, dataset, generated_summaries, reference_summaries)
     calculate_rouge_scores(rouge_metric, generated_summaries, reference_summaries)
     human_sense_check(dataset, generated_summaries)
 
