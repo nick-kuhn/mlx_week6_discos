@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, OneCycleLR
 import wandb
 import argparse
 from pathlib import Path
@@ -286,8 +286,15 @@ class SummarizationTrainer:
         print(f"📝 Tokenizer vocab size: {len(self.tokenizer)}")
 
 
-        # Load PEFT adapter
-        self.model = peft.get_peft_model(self.model, peft.LoraConfig(r=8, lora_alpha=32, lora_dropout=0.05, bias="none"))
+        # Load PEFT adapter with configurable settings
+        lora_config = peft.LoraConfig(
+            r=getattr(self.config.advanced.lora, 'r', 8),
+            lora_alpha=getattr(self.config.advanced.lora, 'alpha', 32),
+            lora_dropout=getattr(self.config.advanced.lora, 'dropout', 0.05),
+            bias=getattr(self.config.advanced.lora, 'bias', "none"),
+            target_modules=getattr(self.config.advanced.lora, 'target_modules', None)
+        )
+        self.model = peft.get_peft_model(self.model, lora_config)
         self.model.print_trainable_parameters()
         
     def setup_data(self):
@@ -348,19 +355,35 @@ class SummarizationTrainer:
         steps_per_epoch = len(self.train_loader) // self.config.training.gradient_accumulation_steps
         self.total_steps = steps_per_epoch * self.config.training.num_epochs
         
-        # Learning rate scheduler
+        # Learning rate scheduler with warmup
         if self.config.training.lr_scheduler == 'cosine':
+            # Use OneCycleLR for cosine with warmup
+            self.scheduler = OneCycleLR(
+                self.optimizer,
+                max_lr=self.config.training.learning_rate,
+                total_steps=self.total_steps,
+                pct_start=0.1,  # 10% warmup
+                anneal_strategy='cos',
+                div_factor=10,  # Initial LR = max_lr / div_factor
+                final_div_factor=100  # Final LR = max_lr / final_div_factor
+            )
+        elif self.config.training.lr_scheduler == 'cosine_legacy':
+            # Legacy cosine scheduler without warmup (for comparison)
             self.scheduler = CosineAnnealingLR(
                 self.optimizer, 
                 T_max=self.total_steps,
                 eta_min=self.config.training.learning_rate * 0.1
             )
         else:
-            self.scheduler = LinearLR(
+            # Linear scheduler with warmup using OneCycleLR
+            self.scheduler = OneCycleLR(
                 self.optimizer,
-                start_factor=1.0,
-                end_factor=0.1,
-                total_iters=self.total_steps
+                max_lr=self.config.training.learning_rate,
+                total_steps=self.total_steps,
+                pct_start=0.1,  # 10% warmup
+                anneal_strategy='linear',
+                div_factor=10,  # Initial LR = max_lr / div_factor
+                final_div_factor=100  # Final LR = max_lr / final_div_factor
             )
         
         # Loss function (cross-entropy for language modeling with label smoothing)
