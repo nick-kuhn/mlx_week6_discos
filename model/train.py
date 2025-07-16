@@ -467,9 +467,8 @@ class SummarizationTrainer:
         
         # Only save and upload best models to save disk space
         if is_best:
-            # Check if we should actually save this best model
-            should_upload = (self.config.logging.use_wandb and self.config.logging.upload_checkpoints and 
-                           self.global_step % 2000 == 0)
+            # Always upload best models, regardless of step count
+            should_upload = (self.config.logging.use_wandb and self.config.logging.upload_checkpoints)
             
             if should_upload:
                 # Clean up previous upload if complete
@@ -499,8 +498,8 @@ class SummarizationTrainer:
                         print(f"🗑️  Deleted local checkpoint due to upload failure")
                     return None
             else:
-                # Not uploading this step - don't save to disk at all
-                print(f"🏆 Best model achieved at step {self.global_step} (will save at next 2000-step interval)")
+                # Not uploading - wandb disabled or upload_checkpoints disabled
+                print(f"🏆 Best model achieved at step {self.global_step} (upload disabled)")
                 return None
         else:
             # For non-best checkpoints, create temporary file, upload, then always delete
