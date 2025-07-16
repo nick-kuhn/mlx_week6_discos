@@ -126,22 +126,14 @@ class SummarizationTrainer:
         """Switch between baseline and finetuned model modes using LoRA adapters."""
         if mode == 'baseline':
             # Disable LoRA adapters to get baseline model behavior
-            try:
-                self.model.disable_adapters()
-                if hasattr(self, 'config') and self.config.logging.verbose_evals:
-                    print("🔄 Switched to baseline mode (LoRA adapters disabled)")
-            except Exception as e:
-                print(f"⚠️ Warning: Could not disable adapters: {e}")
-                print("   Continuing with current model state...")
+            self.model.disable_adapters()
+            if hasattr(self, 'config') and self.config.logging.verbose_evals:
+                print("🔄 Switched to baseline mode (LoRA adapters disabled)")
         elif mode == 'finetuned':
             # Enable LoRA adapters to get finetuned model behavior
-            try:
-                self.model.enable_adapters()
-                if hasattr(self, 'config') and self.config.logging.verbose_evals:
-                    print("🔄 Switched to finetuned mode (LoRA adapters enabled)")
-            except Exception as e:
-                print(f"⚠️ Warning: Could not enable adapters: {e}")
-                print("   Continuing with current model state...")
+            self.model.enable_adapters()
+            if hasattr(self, 'config') and self.config.logging.verbose_evals:
+                print("🔄 Switched to finetuned mode (LoRA adapters enabled)")
         else:
             raise ValueError(f"Unknown mode: {mode}. Use 'baseline' or 'finetuned'.")
     
@@ -218,7 +210,6 @@ class SummarizationTrainer:
                 except Exception as e:
                     print(f"⚠️ Error calculating reward score: {e}")
                     rewards.append(0.0)  # Fallback score
-        
         return rewards
     
     def generate_summary(self, model, prompt_text):
@@ -492,7 +483,7 @@ class SummarizationTrainer:
                 torch.save(checkpoint, best_path)
                 print(f"💾 Best model saved at step {self.global_step} ({best_path.stat().st_size / 1e9:.1f}GB)")
                 
-                upload_success = self.upload_checkpoint_to_wandb(best_path, f"best_finetuned_model", is_best=True)
+                upload_success = self.upload_checkpoint_to_wandb(best_path, f"best_finetuned_model_{self.config.logging.run_name}", is_best=True)
                 
                 if upload_success:
                     # Track this file as currently uploading
@@ -506,8 +497,8 @@ class SummarizationTrainer:
                         print(f"🗑️  Deleted local checkpoint due to upload failure")
                     return None
             else:
-                # Not uploading - wandb disabled or upload_checkpoints disabled
-                print(f"🏆 Best model achieved at step {self.global_step} (upload disabled)")
+                # Not uploading this step - don't save to disk at all
+                print(f"🏆 Best model achieved at step {self.global_step} (will save at next 2000-step interval)")
                 return None
         else:
             # For non-best checkpoints, create temporary file, upload, then always delete
