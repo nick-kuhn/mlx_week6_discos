@@ -1,3 +1,7 @@
+import os
+# Set tokenizer parallelism before importing transformers to avoid fork warnings
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -11,7 +15,6 @@ from datetime import datetime
 from tqdm import tqdm
 import numpy as np
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification
-import os
 import torch.amp
 from accelerate import Accelerator
 import peft
@@ -95,8 +98,8 @@ class SummarizationTrainer:
         if self.baseline_model is None:
             print("🔄 Loading baseline model...")
             self.baseline_model = AutoModelForCausalLM.from_pretrained(self.baseline_model_name)
-            if self.baseline_model.config.pad_token_id is None:
-                self.baseline_model.config.pad_token_id = self.tokenizer.eos_token_id
+            # Set pad_token_id in generation config to suppress warnings during generation
+            self.baseline_model.generation_config.pad_token_id = self.tokenizer.eos_token_id
             self.baseline_model.to(self.device)
             self.baseline_model.eval()
             print("✅ Baseline model loaded")
@@ -283,9 +286,8 @@ class SummarizationTrainer:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
             
-        # Also set pad_token_id in model config to avoid warnings during generation
-        if self.model.config.pad_token_id is None:
-            self.model.config.pad_token_id = self.tokenizer.eos_token_id
+        # Set pad_token_id in generation config to suppress warnings during generation
+        self.model.generation_config.pad_token_id = self.tokenizer.eos_token_id
             
         self.model.to(self.device)
         

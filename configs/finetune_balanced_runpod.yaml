@@ -1,0 +1,72 @@
+# Balanced configuration for fine-tuning summarization model
+# This config provides a middle-ground between stability and adaptability
+
+# Model configuration
+model:
+  name: "Qwen/Qwen3-0.6B-Base"
+  checkpoint_dir: "checkpoints"
+
+# Training hyperparameters
+training:
+  num_epochs: 1
+  batch_size: 4
+  eval_batch_size: 8
+  gradient_accumulation_steps: 4
+  learning_rate: 2e-5
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  lr_scheduler: "cosine"  # Options: cosine, linear, cosine_legacy
+  use_amp: true
+
+# Data configuration
+data:
+  train_path: "CarperAI/openai_summarize_tldr"
+  val_path: "CarperAI/openai_summarize_tldr"
+  num_workers: 0  # Set to 0 for Windows compatibility
+
+# Logging and monitoring
+logging:
+  use_wandb: true
+  wandb_project: "summarization-finetuning"
+  run_name: null  # Auto-generated if null
+  log_freq: 50
+  eval_freq: 500
+  max_eval_batches: 100
+  upload_checkpoints: true
+  checkpoint_upload_freq: 2000
+  delete_after_upload: true
+  verbose_evals: false
+  reward_evaluation: false
+
+# Resume training
+resume:
+  resume_from_checkpoint: null
+
+# Advanced settings
+advanced:
+  # LoRA configuration - Balanced approach
+  lora:
+    r: 8                    # Good expressiveness while maintaining stability
+    alpha: 16               # Moderate scaling factor of 2.0 (alpha/r)
+    dropout: 0.1            # Higher dropout for regularization
+    bias: "none"
+    target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"]  # All attention projections
+  
+  # Mixed precision settings
+  mixed_precision:
+    enabled: true
+    dtype: "fp16"  # Options: fp16, bf16
+  
+  # Memory optimization
+  memory:
+    gradient_checkpointing: false
+    cleanup_frequency: 20  # Steps between cache cleanup
+    tensor_cache_cleanup_freq: 500
+  
+  # Generation settings for evaluation
+  generation:
+    max_new_tokens: 100
+    do_sample: true
+    temperature: 0.7
+    top_p: 0.9
+    repetition_penalty: 1.1
