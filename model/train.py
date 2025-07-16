@@ -64,19 +64,22 @@ class SummarizationTrainer:
         print(f"🖥️  Device: {self.device} ({'CUDA available' if torch.cuda.is_available() else 'CUDA not available'})")
         
     def setup_reward_model(self):
-        """Initialize reward model for evaluation with lazy loading."""
+        """Initialize reward model for evaluation with cached baseline approach."""
         print("🎯 Setting up reward model...")
         
         # Store model names for lazy loading
         self.reward_model_name = "OpenAssistant/reward-model-deberta-v3-large-v2"
-        self.baseline_model_name = self.config.model.name
         
-        # Initialize as None - will be loaded when needed
+        # Initialize reward model as None - will be loaded when needed
         self.reward_model = None
         self.reward_tokenizer = None
-        self.baseline_model = None
         
-        print("✅ Reward model setup complete (lazy loading enabled)")
+        # Baseline evaluation cache
+        self.baseline_reward_scores = None
+        self.baseline_validation_samples = None
+        self._baseline_initialized = False
+        
+        print("✅ Reward model setup complete (cached baseline approach enabled)")
     
     def load_reward_model(self):
         """Lazy load reward model when needed."""
@@ -93,17 +96,86 @@ class SummarizationTrainer:
             print("✅ Reward model loaded")
         return self.reward_model, self.reward_tokenizer
     
-    def load_baseline_model(self):
-        """Lazy load baseline model when needed."""
-        if self.baseline_model is None:
-            print("🔄 Loading baseline model...")
-            self.baseline_model = AutoModelForCausalLM.from_pretrained(self.baseline_model_name)
-            # Set pad_token_id in generation config to suppress warnings during generation
-            self.baseline_model.generation_config.pad_token_id = self.tokenizer.eos_token_id
-            self.baseline_model.to(self.device)
-            self.baseline_model.eval()
-            print("✅ Baseline model loaded")
-        return self.baseline_model
+    def get_validation_samples(self, num_samples=10):
+        """Get a fixed set of validation samples for consistent baseline comparison."""
+        samples = []
+        for i, batch in enumerate(self.val_loader):
+            if i >= num_samples or batch is None:
+                break
+                
+            # Get the prompt (input text before summary)
+            mask_length = (batch['labels'] == -100).sum().item()
+            prompt_text = self.tokenizer.decode(
+                batch['input_ids'][0][:mask_length], 
+                skip_special_tokens=True
+            )
+            
+            # Get reference summary
+            reference_summary = self.tokenizer.decode(
+                batch['labels'][0][mask_length:], 
+                skip_special_tokens=True
+            )
+            
+            samples.append({
+                'prompt': prompt_text,
+                'reference': reference_summary
+            })
+        return samples
+    
+    def set_model_mode(self, mode='finetuned'):
+        """Switch between baseline and finetuned model modes using LoRA adapters."""
+        if mode == 'baseline':
+            # Disable LoRA adapters to get baseline model behavior
+            self.model.disable_adapters()
+            if hasattr(self, 'config') and self.config.logging.verbose_evals:
+                print("🔄 Switched to baseline mode (LoRA adapters disabled)")
+        elif mode == 'finetuned':
+            # Enable LoRA adapters to get finetuned model behavior
+            self.model.enable_adapters()
+            if hasattr(self, 'config') and self.config.logging.verbose_evals:
+                print("🔄 Switched to finetuned mode (LoRA adapters enabled)")
+        else:
+            raise ValueError(f"Unknown mode: {mode}. Use 'baseline' or 'finetuned'.")
+    
+    def initialize_baseline_rewards(self, num_samples=10):
+        """Initialize baseline reward scores once at the beginning."""
+        if self._baseline_initialized:
+            return
+            
+        print("🔄 Initializing baseline reward scores (one-time setup)...")
+        
+        # Get fixed set of validation samples
+        self.baseline_validation_samples = self.get_validation_samples(num_samples)
+        
+        if not self.baseline_validation_samples:
+            print("⚠️ No validation samples found for baseline initialization")
+            self._baseline_initialized = True
+            self.baseline_reward_scores = []
+            return
+        
+        # Switch to baseline mode (disable LoRA adapters)
+        self.set_model_mode('baseline')
+        
+        # Generate summaries with baseline model
+        baseline_summaries = []
+        for sample in self.baseline_validation_samples:
+            summary = self.generate_summary(self.model, sample['prompt'])
+            baseline_summaries.append(summary)
+        
+        # Switch back to finetuned mode
+        self.set_model_mode('finetuned')
+        
+        # Calculate baseline rewards
+        baseline_inputs = [
+            f"{sample['prompt']} {summary}" 
+            for sample, summary in zip(self.baseline_validation_samples, baseline_summaries)
+        ]
+        
+        self.baseline_reward_scores = self.calculate_reward_scores(baseline_inputs)
+        self._baseline_initialized = True
+        
+        print(f"✅ Baseline rewards initialized: avg={np.mean(self.baseline_reward_scores):.4f}")
+        print(f"   Evaluated on {len(self.baseline_validation_samples)} validation samples")
     
     def unload_reward_models(self):
         """Unload reward models to free memory."""
@@ -113,12 +185,8 @@ class SummarizationTrainer:
             self.reward_model = None
             self.reward_tokenizer = None
             
-        if self.baseline_model is not None:
-            del self.baseline_model
-            self.baseline_model = None
-            
         torch.cuda.empty_cache()
-        print("🧹 Reward models unloaded from memory")
+        print("🧹 Reward model unloaded from memory")
         
     def calculate_reward_scores(self, reward_inputs):
         """Calculate reward scores for given inputs using the reward model."""
@@ -176,104 +244,69 @@ class SummarizationTrainer:
             return "Error generating summary"
     
     def evaluate_with_reward_model(self, num_samples=10):
-        """Evaluate model using reward model comparison."""
+        """Evaluate model using cached baseline rewards for efficient comparison."""
         print("🎯 Running reward model evaluation...")
         
         try:
-            # Get sample data for evaluation
-            sample_data = []
-            for i, batch in enumerate(self.val_loader):
-                if i >= num_samples:
-                    break
-                if batch is None:
-                    continue
-                    
-                # Get the prompt (input text before summary)
-                mask_length = (batch['labels'] == -100).sum().item()
-                prompt_text = self.tokenizer.decode(
-                    batch['input_ids'][0][:mask_length], 
-                    skip_special_tokens=True
-                )
-                
-                # Get reference summary
-                reference_summary = self.tokenizer.decode(
-                    batch['labels'][0][mask_length:], 
-                    skip_special_tokens=True
-                )
-                
-                sample_data.append({
-                    'prompt': prompt_text,
-                    'reference': reference_summary
-                })
+            # Initialize baseline rewards if not done yet
+            if not self._baseline_initialized:
+                self.initialize_baseline_rewards(num_samples)
             
-            if not sample_data:
-                print("⚠️ No samples found for reward evaluation")
-                return {
-                    'reward_finetuned_avg': 0.0,
-                    'reward_baseline_avg': 0.0,
-                    'reward_improvement': 0.0,
-                    'reward_improvement_std': 0.0
-                }
+            if not self.baseline_validation_samples or not self.baseline_reward_scores:
+                print("⚠️ No baseline data available for reward evaluation")
+                return self.get_default_reward_metrics()
             
-            # Load baseline model for summary generation
-            baseline_model = self.load_baseline_model()
-            
-            # Generate summaries with both models
+            # Generate summaries with current finetuned model (using same samples as baseline)
             finetuned_summaries = []
-            baseline_summaries = []
-            
-            for sample in sample_data:
-                # Generate with current finetuned model
-                finetuned_summary = self.generate_summary(self.model, sample['prompt'])
-                finetuned_summaries.append(finetuned_summary)
-                
-                # Generate with baseline model
-                baseline_summary = self.generate_summary(baseline_model, sample['prompt'])
-                baseline_summaries.append(baseline_summary)
+            for sample in self.baseline_validation_samples:
+                summary = self.generate_summary(self.model, sample['prompt'])
+                finetuned_summaries.append(summary)
             
             # Prepare inputs for reward model
             finetuned_inputs = [
-                f"{sample['prompt']} {summary}" 
-                for sample, summary in zip(sample_data, finetuned_summaries)
-            ]
-            baseline_inputs = [
-                f"{sample['prompt']} {summary}" 
-                for sample, summary in zip(sample_data, baseline_summaries)
+                f"{sample['prompt']} {summary}"
+                for sample, summary in zip(self.baseline_validation_samples, finetuned_summaries)
             ]
             
-            # Calculate rewards
+            # Calculate rewards for current finetuned model
             finetuned_rewards = self.calculate_reward_scores(finetuned_inputs)
-            baseline_rewards = self.calculate_reward_scores(baseline_inputs)
             
-            # Calculate metrics
-            reward_improvements = [f - b for f, b in zip(finetuned_rewards, baseline_rewards)]
+            # Calculate improvement using cached baseline scores
+            reward_improvements = [
+                f - b for f, b in zip(finetuned_rewards, self.baseline_reward_scores)
+            ]
             
             metrics = {
                 'reward_finetuned_avg': np.mean(finetuned_rewards),
-                'reward_baseline_avg': np.mean(baseline_rewards),
+                'reward_baseline_avg': np.mean(self.baseline_reward_scores),  # From cache
                 'reward_improvement': np.mean(reward_improvements),
                 'reward_improvement_std': np.std(reward_improvements)
             }
             
             print(f"📊 Reward Evaluation Results:")
             print(f"   Finetuned avg: {metrics['reward_finetuned_avg']:.4f}")
-            print(f"   Baseline avg: {metrics['reward_baseline_avg']:.4f}")
+            print(f"   Baseline avg: {metrics['reward_baseline_avg']:.4f} (cached)")
             print(f"   Improvement: {metrics['reward_improvement']:.4f} ± {metrics['reward_improvement_std']:.4f}")
+            print(f"   Evaluated on {len(self.baseline_validation_samples)} samples")
             
             return metrics
             
         except Exception as e:
             print(f"⚠️ Error during reward evaluation: {e}")
-            return {
-                'reward_finetuned_avg': 0.0,
-                'reward_baseline_avg': 0.0,
-                'reward_improvement': 0.0,
-                'reward_improvement_std': 0.0
-            }
+            return self.get_default_reward_metrics()
         
         finally:
             # Always clean up memory after evaluation
             self.unload_reward_models()
+    
+    def get_default_reward_metrics(self):
+        """Return default reward metrics when evaluation fails."""
+        return {
+            'reward_finetuned_avg': 0.0,
+            'reward_baseline_avg': 0.0,
+            'reward_improvement': 0.0,
+            'reward_improvement_std': 0.0
+        }
         
     def setup_model(self):
         """Initialize model and tokenizer."""
