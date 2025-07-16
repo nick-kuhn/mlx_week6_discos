@@ -297,12 +297,15 @@ def aggregate_report(processed_data):
     print(f"Average Human Summary Reward: {avg_human_reward:.4f}")
     
     print("Max and Min Rewards")
-    print(f"Max Base Model Reward: {max(base_rewards):.4f}")
-    print(f"Max Fine-tuned Model Reward: {max(finetuned_rewards):.4f}")
-    print(f"Max Human Summary Reward: {max(human_rewards):.4f}")
-    print(f"Min Base Model Reward: {min(base_rewards):.4f}")
-    print(f"Min Fine-tuned Model Reward: {min(finetuned_rewards):.4f}")
-    print(f"Min Human Summary Reward: {min(human_rewards):.4f}")
+    print(f"Max 5 Base Model Rewards: {max(base_rewards[:5]):.4f}")
+    print(f"Max 5 Finetuned Model Rewards: {max(finetuned_rewards[:5]):.4f}")
+    print(f"Max 5 Human Model Rewards: {max(human_rewards[:5]):.4f}")    
+    print(f"Min 5 Base Model Rewards: {min(base_rewards[:5]):.4f}")
+    print(f"Min Finetuned Model Rewards: {min(finetuned_rewards[:5]):.4f}")
+    print(f"Min 5 Human Model Rewards: {min(human_rewards[:5]):.4f}")  
+    
+
+
 
 
     print("\n--- Examples ---")
