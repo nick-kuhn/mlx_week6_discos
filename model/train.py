@@ -126,14 +126,22 @@ class SummarizationTrainer:
         """Switch between baseline and finetuned model modes using LoRA adapters."""
         if mode == 'baseline':
             # Disable LoRA adapters to get baseline model behavior
-            self.model.disable_adapters()
-            if hasattr(self, 'config') and self.config.logging.verbose_evals:
-                print("🔄 Switched to baseline mode (LoRA adapters disabled)")
+            try:
+                self.model.disable_adapters()
+                if hasattr(self, 'config') and self.config.logging.verbose_evals:
+                    print("🔄 Switched to baseline mode (LoRA adapters disabled)")
+            except Exception as e:
+                print(f"⚠️ Warning: Could not disable adapters: {e}")
+                print("   Continuing with current model state...")
         elif mode == 'finetuned':
             # Enable LoRA adapters to get finetuned model behavior
-            self.model.enable_adapters()
-            if hasattr(self, 'config') and self.config.logging.verbose_evals:
-                print("🔄 Switched to finetuned mode (LoRA adapters enabled)")
+            try:
+                self.model.enable_adapters()
+                if hasattr(self, 'config') and self.config.logging.verbose_evals:
+                    print("🔄 Switched to finetuned mode (LoRA adapters enabled)")
+            except Exception as e:
+                print(f"⚠️ Warning: Could not enable adapters: {e}")
+                print("   Continuing with current model state...")
         else:
             raise ValueError(f"Unknown mode: {mode}. Use 'baseline' or 'finetuned'.")
     
