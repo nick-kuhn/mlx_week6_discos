@@ -44,12 +44,13 @@ resume:
 
 # Advanced settings
 advanced:
-  # LoRA configuration (currently hardcoded in setup_model)
+  # LoRA configuration (now configurable)
   lora:
-    r: 8
-    alpha: 32
-    dropout: 0.05
+    r: 4                    # Reduced from 8 for more conservative updates
+    alpha: 8                # Reduced from 32 (alpha=2*r for scaling factor of 2.0)
+    dropout: 0.1            # Increased from 0.05 for better regularization
     bias: "none"
+    target_modules: ["q_proj", "v_proj"]  # Only attention query/value projections
   
   # Mixed precision settings
   mixed_precision:
