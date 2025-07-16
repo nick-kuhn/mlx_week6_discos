@@ -25,15 +25,15 @@ class SummarizationTrainer:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Setup directories
-        self.checkpoint_dir = Path(config.checkpoint_dir)
+        self.checkpoint_dir = Path(config.model.checkpoint_dir)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
         # Track current upload file
         self.current_upload_file = None
         
         # Initialize mixed precision scaler
-        self.accelerator = Accelerator(mixed_precision = "fp16" if config.use_amp else "no")
-        self.use_amp = getattr(config, 'use_amp', True) #and torch.cuda.is_available() #handled by accelerator
+        self.accelerator = Accelerator(mixed_precision = "fp16" if config.training.use_amp else "no")
+        self.use_amp = getattr(config.training, 'use_amp', True) #and torch.cuda.is_available() #handled by accelerator
         self.scaler = self.accelerator.scaler if self.use_amp else None
                 
         # Initialize model and tokenizer
@@ -42,7 +42,7 @@ class SummarizationTrainer:
         self.setup_training()
         
         # Initialize reward model if enabled
-        if self.config.reward_evaluation:
+        if self.config.logging.reward_evaluation:
             self.setup_reward_model()
         
         # Training state
@@ -59,7 +59,7 @@ class SummarizationTrainer:
         
         # Store model names for lazy loading
         self.reward_model_name = "OpenAssistant/reward-model-deberta-v3-large-v2"
-        self.baseline_model_name = self.config.model_name
+        self.baseline_model_name = self.config.model.name
         
         # Initialize as None - will be loaded when needed
         self.reward_model = None
@@ -269,8 +269,8 @@ class SummarizationTrainer:
         """Initialize model and tokenizer."""
         print("🔧 Setting up model and tokenizer...")
         
-        self.tokenizer = AutoTokenizer.from_pretrained(self.config.model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(self.config.model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.config.model.name)
+        self.model = AutoModelForCausalLM.from_pretrained(self.config.model.name)
         # Setup special tokens for tokenizer
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -296,12 +296,12 @@ class SummarizationTrainer:
         
         # Create datasets with cache/download configuration
         self.train_dataset = TLDRDataset(
-            train_path=self.config.train_path,
+            train_path=self.config.data.train_path,
             tokenizer=self.tokenizer,
             split='train'
         )
         self.val_dataset = TLDRDataset(
-            train_path=self.config.val_path,
+            train_path=self.config.data.val_path,
             tokenizer=self.tokenizer,
             split='valid'
         )
@@ -316,19 +316,19 @@ class SummarizationTrainer:
         # Create dataloaders
         self.train_loader = DataLoader(
             self.train_dataset,
-            batch_size=self.config.batch_size,
+            batch_size=self.config.training.batch_size,
             shuffle=True,
             collate_fn=collate_fn,
-            num_workers=self.config.num_workers,
+            num_workers=self.config.data.num_workers,
             pin_memory=True if self.device.type == 'cuda' else False
         )
         
         self.val_loader = DataLoader(
             self.val_dataset,
-            batch_size=self.config.eval_batch_size,
+            batch_size=self.config.training.eval_batch_size,
             shuffle=False,
             collate_fn=collate_fn,
-            num_workers=self.config.num_workers,
+            num_workers=self.config.data.num_workers,
             pin_memory=True if self.device.type == 'cuda' else False
         )
         
@@ -339,21 +339,21 @@ class SummarizationTrainer:
         # Optimizer
         self.optimizer = AdamW(
             self.model.parameters(),
-            lr=self.config.learning_rate,
-            weight_decay=self.config.weight_decay,
+            lr=self.config.training.learning_rate,
+            weight_decay=self.config.training.weight_decay,
             betas=(0.9, 0.95)
         )
         
         # Calculate total steps (accounting for gradient accumulation)
-        steps_per_epoch = len(self.train_loader) // self.config.gradient_accumulation_steps
-        self.total_steps = steps_per_epoch * self.config.num_epochs
+        steps_per_epoch = len(self.train_loader) // self.config.training.gradient_accumulation_steps
+        self.total_steps = steps_per_epoch * self.config.training.num_epochs
         
         # Learning rate scheduler
-        if self.config.lr_scheduler == 'cosine':
+        if self.config.training.lr_scheduler == 'cosine':
             self.scheduler = CosineAnnealingLR(
                 self.optimizer, 
                 T_max=self.total_steps,
-                eta_min=self.config.learning_rate * 0.1
+                eta_min=self.config.training.learning_rate * 0.1
             )
         else:
             self.scheduler = LinearLR(
@@ -367,19 +367,19 @@ class SummarizationTrainer:
         self.criterion = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.1)
         
         print(f"🎯 Total training steps: {self.total_steps}")
-        print(f"📈 Learning rate scheduler: {self.config.lr_scheduler}")
+        print(f"📈 Learning rate scheduler: {self.config.training.lr_scheduler}")
         
     def init_wandb(self):
         """Initialize Weights & Biases logging."""
         wandb.init(
-            project=self.config.wandb_project,
-            name=self.config.run_name,
-            config=vars(self.config),
-            resume='allow' if self.config.resume_from_checkpoint else None
+            project=self.config.logging.wandb_project,
+            name=self.config.get_run_name(),
+            config=self.config.dict(),
+            resume='allow' if self.config.resume.resume_from_checkpoint else None
         )
         
         # Watch model for gradient tracking (disabled heavy logging for performance)
-        # wandb.watch(self.model, log='all', log_freq=self.config.log_freq)  # Too slow - uploads 7+ GB every 50 steps!
+        # wandb.watch(self.model, log='all', log_freq=self.config.logging.log_freq)  # Too slow - uploads 7+ GB every 50 steps!
         wandb.watch(self.model, log=None, log_freq=1000)  # Only log topology, no gradients/parameters
         
     def save_checkpoint(self, is_best=False, suffix=""):
@@ -392,14 +392,14 @@ class SummarizationTrainer:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'best_val_loss': self.best_val_loss,
-            'config': vars(self.config),
-            'base_model_name': self.config.model_name  # Store base model name for loading
+            'config': self.config.dict(),
+            'base_model_name': self.config.model.name  # Store base model name for loading
         }
         
         # Only save and upload best models to save disk space
         if is_best:
             # Check if we should actually save this best model
-            should_upload = (self.config.use_wandb and self.config.upload_checkpoints and 
+            should_upload = (self.config.logging.use_wandb and self.config.logging.upload_checkpoints and 
                            self.global_step % 2000 == 0)
             
             if should_upload:
@@ -407,7 +407,7 @@ class SummarizationTrainer:
                 upload_slot_available = self.cleanup_previous_upload()
                 
                 # Check if we should skip saving to avoid disk space issues
-                if not upload_slot_available and self.config.delete_after_upload:
+                if not upload_slot_available and self.config.logging.delete_after_upload:
                     print(f"⏳ Previous upload still in progress, skipping checkpoint save to avoid disk issues")
                     return None
                 
@@ -425,7 +425,7 @@ class SummarizationTrainer:
                     return best_path
                 else:
                     print(f"⚠️  Upload failed, deleting local file to save disk space")
-                    if self.config.delete_after_upload:
+                    if self.config.logging.delete_after_upload:
                         best_path.unlink()
                         print(f"🗑️  Deleted local checkpoint due to upload failure")
                     return None
@@ -439,8 +439,8 @@ class SummarizationTrainer:
             torch.save(checkpoint, temp_checkpoint_path)
             
             # Upload if it's time for periodic backup
-            if (self.config.use_wandb and self.config.upload_checkpoints and 
-                self.global_step % self.config.checkpoint_upload_freq == 0):
+            if (self.config.logging.use_wandb and self.config.logging.upload_checkpoints and 
+                self.global_step % self.config.logging.checkpoint_upload_freq == 0):
                 
                 print(f"💾 Temporary checkpoint saved ({temp_checkpoint_path.stat().st_size / 1e9:.1f}GB)")
                 upload_success = self.upload_checkpoint_to_wandb(temp_checkpoint_path, f"checkpoint_finetuned_model", is_best=False)
@@ -473,7 +473,7 @@ class SummarizationTrainer:
                     "step": self.global_step,
                     "epoch": self.current_epoch,
                     "val_loss": self.best_val_loss,
-                    "base_model_name": self.config.model_name,
+                    "base_model_name": self.config.model.name,
                     "adapter_type": "lora",
                     "checkpoint_type": "lora_adapter_only"
                 }
@@ -530,9 +530,9 @@ class SummarizationTrainer:
         
         # Verify base model compatibility
         if 'base_model_name' in checkpoint:
-            if checkpoint['base_model_name'] != self.config.model_name:
+            if checkpoint['base_model_name'] != self.config.model.name:
                 print(f"⚠️  Warning: Checkpoint base model ({checkpoint['base_model_name']}) "
-                      f"differs from current model ({self.config.model_name})")
+                      f"differs from current model ({self.config.model.name})")
         
         print(f"✅ Resumed from epoch {self.current_epoch}, step {self.global_step}")
         
@@ -562,7 +562,7 @@ class SummarizationTrainer:
             loss = output.loss
             
             # Scale loss for gradient accumulation
-            loss = loss / self.config.gradient_accumulation_steps
+            loss = loss / self.config.training.gradient_accumulation_steps
         
         # Backward pass with proper mixed precision handling
         if self.use_amp:
@@ -571,11 +571,11 @@ class SummarizationTrainer:
             loss.backward()
         
         # Only update optimizer every accumulation_steps
-        if (self.global_step + 1) % self.config.gradient_accumulation_steps == 0:
+        if (self.global_step + 1) % self.config.training.gradient_accumulation_steps == 0:
             if self.use_amp:
                 # Gradient clipping with scaler
                 self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.training.max_grad_norm)
                 
                 # Track optimizer step count to detect if step actually happened
                 optimizer_step_count_before = self.optimizer.state_dict().get('state', {}).get(next(iter(self.optimizer.param_groups[0]['params'])), {}).get('step', 0)
@@ -591,7 +591,7 @@ class SummarizationTrainer:
                     self.scheduler.step()
             else:
                 # Standard gradient clipping and optimizer step
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.training.max_grad_norm)
                 self.optimizer.step()
                 self.scheduler.step()
             
@@ -599,7 +599,7 @@ class SummarizationTrainer:
         
         # Calculate gradient norm without retaining gradients (memory leak fix)
         grad_norm = 0.0
-        if (self.global_step + 1) % self.config.gradient_accumulation_steps == 0:
+        if (self.global_step + 1) % self.config.training.gradient_accumulation_steps == 0:
             # Only calculate grad norm when we actually update (avoids memory retention)
             total_norm = 0.0
             for p in self.model.parameters():
@@ -609,7 +609,7 @@ class SummarizationTrainer:
             grad_norm = total_norm ** (1. / 2)
         
         return {
-            'loss': loss.item() * self.config.gradient_accumulation_steps,  # Report unscaled loss for logging
+            'loss': loss.item() * self.config.training.gradient_accumulation_steps,  # Report unscaled loss for logging
             'lr': self.optimizer.param_groups[0]['lr'],
             'grad_norm': grad_norm
         }
@@ -650,7 +650,7 @@ class SummarizationTrainer:
                     torch.cuda.empty_cache()
                 
                 # Don't evaluate entire val set every time (too expensive)
-                if num_batches >= self.config.max_eval_batches:
+                if num_batches >= self.config.logging.max_eval_batches:
                     break
         
         # Generate examples for ROUGE score calculation
@@ -660,7 +660,7 @@ class SummarizationTrainer:
             self.val_dataset, 
             self.device, 
             num_examples=10,  # Use more examples for better ROUGE calculation
-            verbose=self.config.verbose_evals
+            verbose=self.config.logging.verbose_evals
         )
         
         # Calculate ROUGE scores
@@ -668,7 +668,7 @@ class SummarizationTrainer:
         
         # Calculate reward model metrics if enabled
         reward_metrics = {}
-        if self.config.reward_evaluation:
+        if self.config.logging.reward_evaluation:
             reward_metrics = self.evaluate_with_reward_model(num_samples=5)  # Use fewer samples to save time
         
         avg_loss = total_loss / max(num_batches, 1)
@@ -682,12 +682,12 @@ class SummarizationTrainer:
         print("🚀 Starting training...")
         
         # Initialize wandb
-        if self.config.use_wandb:
+        if self.config.logging.use_wandb:
             self.init_wandb()
         
         # Load checkpoint if resuming
-        if self.config.resume_from_checkpoint:
-            checkpoint_path = self.config.resume_from_checkpoint
+        if self.config.resume.resume_from_checkpoint:
+            checkpoint_path = self.config.resume.resume_from_checkpoint
             if Path(checkpoint_path).exists():
                 self.load_checkpoint(checkpoint_path)
             else:
@@ -695,9 +695,9 @@ class SummarizationTrainer:
         
         start_time = time.time()
         
-        for epoch in range(self.current_epoch, self.config.num_epochs):
+        for epoch in range(self.current_epoch, self.config.training.num_epochs):
             self.current_epoch = epoch
-            print(f"\n📅 Epoch {epoch + 1}/{self.config.num_epochs}")
+            print(f"\n📅 Epoch {epoch + 1}/{self.config.training.num_epochs}")
             
             # Training loop
             epoch_loss = 0
@@ -723,8 +723,8 @@ class SummarizationTrainer:
                 })
                 
                 # Logging
-                if self.global_step % self.config.log_freq == 0:
-                    if self.config.use_wandb:
+                if self.global_step % self.config.logging.log_freq == 0:
+                    if self.config.logging.use_wandb:
                         wandb.log({
                             'train/loss': metrics['loss'],
                             'train/learning_rate': metrics['lr'],
@@ -734,12 +734,12 @@ class SummarizationTrainer:
                         })
                 
                 # Mid-epoch evaluation and checkpointing
-                if self.global_step % self.config.eval_freq == 0:
+                if self.global_step % self.config.logging.eval_freq == 0:
                     eval_metrics = self.evaluate()
                     
 
                     
-                    if self.config.use_wandb:
+                    if self.config.logging.use_wandb:
                         log_dict = {
                             'eval/val_loss': eval_metrics['val_loss'],
                             'eval/rouge-L': eval_metrics['rouge_scores']['rougeL'],
@@ -747,7 +747,7 @@ class SummarizationTrainer:
                         }
                         
                         # Add reward metrics if available
-                        if self.config.reward_evaluation and 'reward_improvement' in eval_metrics:
+                        if self.config.logging.reward_evaluation and 'reward_improvement' in eval_metrics:
                             log_dict.update({
                                 'eval/reward_improvement': eval_metrics['reward_improvement'],
                                 'eval/reward_finetuned_avg': eval_metrics['reward_finetuned_avg'],
@@ -757,7 +757,7 @@ class SummarizationTrainer:
                         wandb.log(log_dict)
                     
                     # Save checkpoint - use reward improvement if available, otherwise val_loss
-                    if self.config.reward_evaluation and 'reward_improvement' in eval_metrics:
+                    if self.config.logging.reward_evaluation and 'reward_improvement' in eval_metrics:
                         is_best = eval_metrics['reward_improvement'] > self.best_reward_improvement
                         if is_best:
                             self.best_reward_improvement = eval_metrics['reward_improvement']
@@ -773,7 +773,7 @@ class SummarizationTrainer:
                     print(f"🔍 ROUGE-L: {eval_metrics['rouge_scores']['rougeL']:.4f}")
                     
                     # Print reward metrics if available
-                    if self.config.reward_evaluation and 'reward_improvement' in eval_metrics:
+                    if self.config.logging.reward_evaluation and 'reward_improvement' in eval_metrics:
                         best_indicator = '🏆' if is_best else ''
                         print(f"🎯 Reward Improvement: {eval_metrics['reward_improvement']:.4f} {best_indicator}")
                         print(f"📈 Best Reward Improvement: {self.best_reward_improvement:.4f}")
@@ -805,7 +805,7 @@ class SummarizationTrainer:
             
             # Final epoch evaluation
             eval_metrics = self.evaluate()
-            if self.config.use_wandb:
+            if self.config.logging.use_wandb:
                 epoch_log_dict = {
                     'epoch/train_loss': avg_epoch_loss,
                     'epoch/val_loss': eval_metrics['val_loss'],
@@ -814,7 +814,7 @@ class SummarizationTrainer:
                 }
                 
                 # Add reward metrics if available
-                if self.config.reward_evaluation and 'reward_improvement' in eval_metrics:
+                if self.config.logging.reward_evaluation and 'reward_improvement' in eval_metrics:
                     epoch_log_dict.update({
                         'epoch/reward_improvement': eval_metrics['reward_improvement'],
                         'epoch/reward_finetuned_avg': eval_metrics['reward_finetuned_avg'],
@@ -828,7 +828,7 @@ class SummarizationTrainer:
             print(f"🧹 End-of-epoch cleanup completed")
         
         print("🎉 Training completed!")
-        if self.config.use_wandb:
+        if self.config.logging.use_wandb:
             wandb.finish()
 
     def is_file_being_uploaded(self, filepath):
@@ -868,48 +868,63 @@ class SummarizationTrainer:
 def parse_args():
     parser = argparse.ArgumentParser(description='Train Summarization Model')
     
+    # Configuration file arguments (keep defaults for utility flags)
+    parser.add_argument('--config', type=str,
+                        help='Path to YAML configuration file')
+    parser.add_argument('--print-config', action='store_true',
+                        help='Print loaded configuration and exit')
+    parser.add_argument('--validate-config', action='store_true',
+                        help='Validate configuration and exit')
+    parser.add_argument('--save-config', type=str,
+                        help='Save current configuration to specified file and exit')
+    
     # Model arguments
-    parser.add_argument('--model_name', type=str, default='Qwen/Qwen3-0.6B-Base')
-    parser.add_argument('--checkpoint_dir', type=str, default='checkpoints')
+    parser.add_argument('--model_name', type=str)
+    parser.add_argument('--checkpoint_dir', type=str)
     
     # Training arguments
-    parser.add_argument('--num_epochs', type=int, default=3)
-    parser.add_argument('--batch_size', type=int, default=4)
-    parser.add_argument('--eval_batch_size', type=int, default=8)
-    parser.add_argument('--gradient_accumulation_steps', type=int, default=2)
-    parser.add_argument('--learning_rate', type=float, default=2e-4)
-    parser.add_argument('--weight_decay', type=float, default=0.01)
-    parser.add_argument('--max_grad_norm', type=float, default=1.0)
-    parser.add_argument('--lr_scheduler', type=str, default='cosine', choices=['cosine', 'linear'])
-    parser.add_argument('--use_amp', action='store_true', default=True,
+    parser.add_argument('--num_epochs', type=int)
+    parser.add_argument('--batch_size', type=int)
+    parser.add_argument('--eval_batch_size', type=int)
+    parser.add_argument('--gradient_accumulation_steps', type=int)
+    parser.add_argument('--learning_rate', type=float)
+    parser.add_argument('--weight_decay', type=float)
+    parser.add_argument('--max_grad_norm', type=float)
+    parser.add_argument('--lr_scheduler', type=str, choices=['cosine', 'linear'])
+    parser.add_argument('--use_amp', action='store_true',
                         help='Use automatic mixed precision training')
+    parser.add_argument('--no_use_amp', action='store_true',
+                        help='Disable automatic mixed precision training')
 
     # Data arguments
-    parser.add_argument('--num_workers', type=int, default=0,
+    parser.add_argument('--num_workers', type=int,
                         help='Number of worker processes for data loading (set to 0 for Windows compatibility)')
-    parser.add_argument('--train_path', type=str, required=False, default='CarperAI/openai_summarize_tldr')
-    parser.add_argument('--val_path', type=str, required=False, default='CarperAI/openai_summarize_tldr')
+    parser.add_argument('--train_path', type=str)
+    parser.add_argument('--val_path', type=str)
     
     # Logging and checkpointing
-    parser.add_argument('--use_wandb', action='store_true', default=True)
-    parser.add_argument('--wandb_project', type=str, default='summarization-finetuning')
-    parser.add_argument('--run_name', type=str, default=None)
-    parser.add_argument('--log_freq', type=int, default=50)
-    parser.add_argument('--eval_freq', type=int, default=500)  # Evaluate every 500 steps
-    parser.add_argument('--max_eval_batches', type=int, default=100)  # Limit eval to save time
-    parser.add_argument('--upload_checkpoints', action='store_true', default=True,
+    parser.add_argument('--use_wandb', action='store_true')
+    parser.add_argument('--no_use_wandb', action='store_true')
+    parser.add_argument('--wandb_project', type=str)
+    parser.add_argument('--run_name', type=str)
+    parser.add_argument('--log_freq', type=int)
+    parser.add_argument('--eval_freq', type=int)
+    parser.add_argument('--max_eval_batches', type=int)
+    parser.add_argument('--upload_checkpoints', action='store_true',
                         help='Upload checkpoints to wandb as artifacts for remote backup')
-    parser.add_argument('--checkpoint_upload_freq', type=int, default=2000,
+    parser.add_argument('--no_upload_checkpoints', action='store_true')
+    parser.add_argument('--checkpoint_upload_freq', type=int,
                         help='Upload regular checkpoints every N steps (best models always uploaded)')
-    parser.add_argument('--delete_after_upload', action='store_true', default=True,
+    parser.add_argument('--delete_after_upload', action='store_true',
                         help='Delete local checkpoints after successful upload to save disk space')
-    parser.add_argument('--verbose-evals', action='store_true', default=False,
+    parser.add_argument('--no_delete_after_upload', action='store_true')
+    parser.add_argument('--verbose-evals', action='store_true',
                         help='Show detailed evaluation output including original prompts during training')
-    parser.add_argument('--reward-evaluation', action='store_true', default=False,
+    parser.add_argument('--reward-evaluation', action='store_true',
                         help='Enable reward model evaluation during training (compares finetuned vs baseline)')
     
     # Resume training
-    parser.add_argument('--resume-from-checkpoint', type=str, default=None)
+    parser.add_argument('--resume-from-checkpoint', type=str)
     
     return parser.parse_args()
 
@@ -917,15 +932,122 @@ def parse_args():
 if __name__ == '__main__':
     args = parse_args()
     
-    # Generate run name if not provided
-    if args.run_name is None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        args.run_name = f"qwen_summarization_{timestamp}"
+    # Import config modules
+    import sys
+    import os
+    sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+    from config import ConfigLoader, ConfigValidator
+    from pydantic import ValidationError
     
-    print("🎯 Training Configuration:")
-    for key, value in vars(args).items():
-        print(f"   {key}: {value}")
+    # Load configuration
+    loader = ConfigLoader()
+    
+    try:
+        if args.config:
+            # Load from config file
+            config = loader.load_config(args.config)
+        else:
+            # Create config from CLI args (backward compatibility)
+            config = loader.create_config_from_args(args)
+    except ValidationError as e:
+        print(f"❌ Configuration validation failed:")
+        print(f"   {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error loading configuration: {e}")
+        sys.exit(1)
+    
+    # Apply CLI overrides if config file was used
+    if args.config:
+        
+        # Apply CLI overrides
+        cli_overrides = {}
+        args_dict = vars(args)
+        
+        # Handle boolean flags with negative counterparts
+        def handle_boolean_flag(positive_key, negative_key, config_path):
+            if args_dict.get(positive_key):
+                cli_overrides[config_path] = True
+            elif args_dict.get(negative_key):
+                cli_overrides[config_path] = False
+        
+        for key, value in args_dict.items():
+            if key in ['config', 'print_config', 'validate_config', 'save_config']:
+                continue
+            if key.startswith('no_'):  # Skip negative flags, handled separately
+                continue
+                
+            # Only apply overrides for non-None values
+            if value is not None:
+                # Map CLI arguments to config structure
+                if key == 'model_name':
+                    cli_overrides['model.name'] = value
+                elif key == 'checkpoint_dir':
+                    cli_overrides['model.checkpoint_dir'] = value
+                elif key in ['num_epochs', 'batch_size', 'eval_batch_size', 'gradient_accumulation_steps', 
+                           'learning_rate', 'weight_decay', 'max_grad_norm', 'lr_scheduler']:
+                    cli_overrides[f'training.{key}'] = value
+                elif key in ['train_path', 'val_path', 'num_workers']:
+                    cli_overrides[f'data.{key}'] = value
+                elif key in ['wandb_project', 'run_name', 'log_freq', 'eval_freq', 'max_eval_batches',
+                           'checkpoint_upload_freq', 'verbose_evals', 'reward_evaluation']:
+                    cli_overrides[f'logging.{key}'] = value
+                elif key == 'resume_from_checkpoint':
+                    cli_overrides['resume.resume_from_checkpoint'] = value
+        
+        # Handle boolean flags with positive/negative variants
+        handle_boolean_flag('use_amp', 'no_use_amp', 'training.use_amp')
+        handle_boolean_flag('use_wandb', 'no_use_wandb', 'logging.use_wandb')
+        handle_boolean_flag('upload_checkpoints', 'no_upload_checkpoints', 'logging.upload_checkpoints')
+        handle_boolean_flag('delete_after_upload', 'no_delete_after_upload', 'logging.delete_after_upload')
+        
+        # Apply overrides
+        if cli_overrides:
+            try:
+                config = loader.apply_overrides(config, cli_overrides)
+            except ValidationError as e:
+                print(f"❌ CLI override validation failed:")
+                print(f"   {e}")
+                sys.exit(1)
+    
+    # Generate run name if not provided
+    if config.logging.run_name is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        config.logging.run_name = f"qwen_summarization_{timestamp}"
+    
+    # Handle utility flags
+    if args.print_config:
+        config.print_config()
+        sys.exit(0)
+    
+    if args.validate_config:
+        validator = ConfigValidator()
+        if validator.validate(config):
+            validator.print_validation_results()
+            print("✅ Configuration is valid!")
+        else:
+            validator.print_validation_results()
+            sys.exit(1)
+    
+    if args.save_config:
+        loader.save_config(config, args.save_config)
+        print(f"✅ Configuration saved to {args.save_config}")
+        sys.exit(0)
+    
+    # Validate configuration before training
+    try:
+        validator = ConfigValidator()
+        if not validator.validate(config):
+            print("❌ Configuration validation failed:")
+            validator.print_validation_results()
+            sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error during configuration validation: {e}")
+        sys.exit(1)
+    
+    # Print configuration (always shown before training)
+    config.print_config()
     
     # Create trainer and start training
-    trainer = SummarizationTrainer(args)
+    trainer = SummarizationTrainer(config)
     trainer.train() 
