@@ -88,8 +88,8 @@ class ConfigLoader:
     def _merge_configs(self, base: TrainingConfiguration, overlay: TrainingConfiguration) -> TrainingConfiguration:
         """Merge two configurations, with overlay taking precedence."""
         # Convert to dictionaries, merge, then back to Pydantic model
-        base_dict = base.dict()
-        overlay_dict = overlay.dict()
+        base_dict = base.model_dump()
+        overlay_dict = overlay.model_dump()
         
         merged_dict = self._deep_merge_dicts(base_dict, overlay_dict)
         
@@ -112,7 +112,7 @@ class ConfigLoader:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        config_dict = config.dict()
+        config_dict = config.model_dump()
         
         try:
             with open(output_path, 'w', encoding='utf-8') as f:
@@ -208,7 +208,7 @@ class ConfigLoader:
     
     def apply_overrides(self, config: TrainingConfiguration, overrides: Dict[str, Any]) -> TrainingConfiguration:
         """Apply parameter overrides to configuration."""
-        config_dict = config.dict()
+        config_dict = config.model_dump()
         
         for key, value in overrides.items():
             # Support dot notation for nested parameters
