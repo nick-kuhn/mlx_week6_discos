@@ -283,6 +283,10 @@ class SummarizationTrainer:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
             
+        # Also set pad_token_id in model config to avoid warnings during generation
+        if self.model.config.pad_token_id is None:
+            self.model.config.pad_token_id = self.tokenizer.eos_token_id
+            
         self.model.to(self.device)
         
         # Resize token embeddings if we added tokens
