@@ -1,7 +1,7 @@
 from .dataset import TLDRDataset
 from torch.utils.data import DataLoader
 import torch
-import evaluate
+import evaluate as hf_evaluate
 
 def generate_prediction(model, tokenizer, text, mask_length, device):
     inputs = tokenizer(text, return_tensors="pt").to(device)
@@ -33,7 +33,7 @@ def evaluate(model, tokenizer, val_dataset, device):
 
 def get_rouge_scores(predictions, references):
     """Get ROUGE scores for a list of stories and summaries."""
-    rouge_metric = evaluate.load("rouge")
+    rouge_metric = hf_evaluate.load("rouge")
     scores = rouge_metric.compute(
         predictions=predictions,
         references=references,
