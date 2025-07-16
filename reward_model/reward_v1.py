@@ -1,4 +1,6 @@
 import os
+# Set tokenizer parallelism before importing transformers to avoid fork warnings
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import torch
 from datasets import load_dataset
@@ -71,7 +73,7 @@ def load_models():
 
     # 2. Load fine-tuned model from W&B artifact
     print("Loading fine-tuned model from W&B...")
-    artifact_path = "ntkuhn/summarization-finetuning/best_model_step_8000:latest"
+    artifact_path = "ntkuhn/summarization-finetuning/best_finetuned_model:v13"
     adapter_path = download_wandb_model(artifact_path)
 
     # Create a separate finetuned model instance from the base model
@@ -104,24 +106,40 @@ def load_models():
             if "lora_state_dict" in checkpoint:
                 from peft import LoraConfig, get_peft_model
 
+                # Extract LoRA config from checkpoint if available, otherwise use defaults that match training
+                config_dict = checkpoint.get('config', {})
+                lora_settings = config_dict.get('advanced', {}).get('lora', {})
+                
                 lora_config = LoraConfig(
-                    r=8,
-                    lora_alpha=32,
-                    target_modules=["q_proj", "v_proj"],
-                    lora_dropout=0.05,
-                    bias="none",
+                    r=lora_settings.get('r', 4),  # Default to 4 to match finetune_default.yaml
+                    lora_alpha=lora_settings.get('alpha', 8),  # Default to 8 to match finetune_default.yaml
+                    target_modules=lora_settings.get('target_modules', ["q_proj", "v_proj"]),
+                    lora_dropout=lora_settings.get('dropout', 0.1),
+                    bias=lora_settings.get('bias', "none"),
                     task_type="CAUSAL_LM",
                 )
+                print(f"Creating LoRA model with r={lora_config.r}, alpha={lora_config.lora_alpha}")
                 finetuned_model = get_peft_model(finetuned_model_base, lora_config)
-                finetuned_model.load_state_dict(checkpoint["lora_state_dict"])
-                print("✅ Loaded LoRA adapter from checkpoint")
+                
+                # Load only the LoRA weights, not the full model state
+                print("Loading LoRA state dict...")
+                try:
+                    finetuned_model.load_state_dict(checkpoint["lora_state_dict"], strict=False)
+                    print("[SUCCESS] LoRA weights loaded successfully")
+                except Exception as e:
+                    print(f"Error loading LoRA state dict: {e}")
+                    # Try to load only the LoRA parameters
+                    lora_state_dict = {k: v for k, v in checkpoint["lora_state_dict"].items() if "lora_" in k}
+                    finetuned_model.load_state_dict(lora_state_dict, strict=False)
+                    print("[SUCCESS] LoRA weights loaded with filtered state dict")
+                print("[SUCCESS] Loaded LoRA adapter from checkpoint")
             elif "model_state_dict" in checkpoint:
                 finetuned_model = finetuned_model_base
                 finetuned_model.load_state_dict(
                     checkpoint["model_state_dict"], strict=False
                 )
                 print(
-                    "✅ Loaded full model from checkpoint (with vocab size adjustment)"
+                    "[SUCCESS] Loaded full model from checkpoint (with vocab size adjustment)"
                 )
             else:
                 raise ValueError("Checkpoint format not recognized")
