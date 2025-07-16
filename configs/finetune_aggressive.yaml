@@ -1,0 +1,72 @@
+# Aggressive configuration for fine-tuning summarization model
+# This config prioritizes adaptability and faster learning
+
+# Model configuration
+model:
+  name: "Qwen/Qwen3-0.6B-Base"
+  checkpoint_dir: "checkpoints"
+
+# Training hyperparameters
+training:
+  num_epochs: 1
+  batch_size: 4
+  eval_batch_size: 8
+  gradient_accumulation_steps: 4
+  learning_rate: 3e-5  # Slightly higher LR
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  lr_scheduler: "cosine"  # Options: cosine, linear, cosine_legacy
+  use_amp: true
+
+# Data configuration
+data:
+  train_path: "CarperAI/openai_summarize_tldr"
+  val_path: "CarperAI/openai_summarize_tldr"
+  num_workers: 0  # Set to 0 for Windows compatibility
+
+# Logging and monitoring
+logging:
+  use_wandb: true
+  wandb_project: "summarization-finetuning"
+  run_name: null  # Auto-generated if null
+  log_freq: 50
+  eval_freq: 100  # More frequent evaluation to catch issues early
+  max_eval_batches: 100
+  upload_checkpoints: true
+  checkpoint_upload_freq: 2000
+  delete_after_upload: true
+  verbose_evals: false
+  reward_evaluation: true  # Enable reward evaluation to track drift
+
+# Resume training
+resume:
+  resume_from_checkpoint: null
+
+# Advanced settings
+advanced:
+  # LoRA configuration - Aggressive approach
+  lora:
+    r: 16                   # Higher rank for maximum expressiveness
+    alpha: 32               # Scaling factor of 2.0 but with higher absolute values
+    dropout: 0.05           # Lower dropout for more aggressive updates
+    bias: "none"
+    target_modules: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]  # Include MLP layers
+  
+  # Mixed precision settings
+  mixed_precision:
+    enabled: true
+    dtype: "fp16"  # Options: fp16, bf16
+  
+  # Memory optimization
+  memory:
+    gradient_checkpointing: false
+    cleanup_frequency: 20  # Steps between cache cleanup
+    tensor_cache_cleanup_freq: 500
+  
+  # Generation settings for evaluation
+  generation:
+    max_new_tokens: 100
+    do_sample: true
+    temperature: 0.7
+    top_p: 0.9
+    repetition_penalty: 1.1
