@@ -32,9 +32,15 @@ class SummarizationTrainer:
         self.current_upload_file = None
         
         # Initialize mixed precision scaler
-        self.accelerator = Accelerator(mixed_precision = "fp16" if config.training.use_amp else "no")
-        self.use_amp = getattr(config.training, 'use_amp', True) #and torch.cuda.is_available() #handled by accelerator
+        cuda_available = torch.cuda.is_available()
+        # Only enable mixed precision if CUDA is available and user wants it
+        self.use_amp = config.training.use_amp and cuda_available
+        
+        self.accelerator = Accelerator(mixed_precision = "fp16" if self.use_amp else "no")
         self.scaler = self.accelerator.scaler if self.use_amp else None
+        
+        if config.training.use_amp and not cuda_available:
+            print("⚠️  Mixed precision requested but CUDA not available, disabling AMP")
                 
         # Initialize model and tokenizer
         self.setup_model()
@@ -52,6 +58,7 @@ class SummarizationTrainer:
         self.best_reward_improvement = 0.0  # Track best reward improvement (starts at baseline)
         
         print(f"🔥 Mixed precision training: {'enabled' if self.use_amp else 'disabled'}")
+        print(f"🖥️  Device: {self.device} ({'CUDA available' if torch.cuda.is_available() else 'CUDA not available'})")
         
     def setup_reward_model(self):
         """Initialize reward model for evaluation with lazy loading."""
@@ -397,7 +404,7 @@ class SummarizationTrainer:
         wandb.init(
             project=self.config.logging.wandb_project,
             name=self.config.get_run_name(),
-            config=self.config.dict(),
+            config=self.config.model_dump(),
             resume='allow' if self.config.resume.resume_from_checkpoint else None
         )
         
@@ -415,7 +422,7 @@ class SummarizationTrainer:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'best_val_loss': self.best_val_loss,
-            'config': self.config.dict(),
+            'config': self.config.model_dump(),
             'base_model_name': self.config.model.name  # Store base model name for loading
         }
         
@@ -574,7 +581,8 @@ class SummarizationTrainer:
         labels = batch['labels'].to(self.device)
         
         # Forward pass with mixed precision
-        with torch.amp.autocast('cuda', enabled=self.use_amp):
+        device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
+        with torch.amp.autocast(device_type, enabled=self.use_amp):
             # Forward pass - model returns logits and loss directly
             output = self.model(
                 input_ids=input_ids,
@@ -656,7 +664,8 @@ class SummarizationTrainer:
                 labels = batch['labels'].to(self.device)
                 
                 # Forward pass with mixed precision
-                with torch.amp.autocast('cuda', enabled=self.use_amp):
+                device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
+                with torch.amp.autocast(device_type, enabled=self.use_amp):
                     # Forward pass - model returns logits directly
                     output = self.model(
                         input_ids=input_ids,
