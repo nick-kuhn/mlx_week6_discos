@@ -295,6 +295,15 @@ def aggregate_report(processed_data):
     print(f"Average Base Model Reward: {avg_base_reward:.4f}")
     print(f"Average Fine-tuned Model Reward: {avg_finetuned_reward:.4f}")
     print(f"Average Human Summary Reward: {avg_human_reward:.4f}")
+    
+    print("Max and Min Rewards")
+    print(f"Max Base Model Reward: {max(base_rewards):.4f}")
+    print(f"Max Fine-tuned Model Reward: {max(finetuned_rewards):.4f}")
+    print(f"Max Human Summary Reward: {max(human_rewards):.4f}")
+    print(f"Min Base Model Reward: {min(base_rewards):.4f}")
+    print(f"Min Fine-tuned Model Reward: {min(finetuned_rewards):.4f}")
+    print(f"Min Human Summary Reward: {min(human_rewards):.4f}")
+
 
     print("\n--- Examples ---")
     for i, item in enumerate(processed_data[:5]):
