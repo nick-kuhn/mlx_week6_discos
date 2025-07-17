@@ -124,7 +124,9 @@ class SummarizationTrainer:
         """Switch between baseline and finetuned model modes using LoRA adapters."""
         # Debug: Print model attributes to understand the structure
         print(f"🔍 Model type: {type(self.model)}")
-        print(f"🔍 Model attributes: {[attr for attr in dir(self.model) if 'peft' in attr.lower() or 'adapter' in attr.lower()]}")
+        print(f"🔍 Active adapter: {getattr(self.model, 'active_adapter', 'None')}")
+        print(f"🔍 Active adapters: {getattr(self.model, 'active_adapters', 'None')}")
+        print(f"🔍 PEFT config: {getattr(self.model, 'peft_config', 'None')}")
         
         if mode == 'baseline':
             # Disable LoRA adapters to get baseline model behavior
@@ -519,7 +521,10 @@ class SummarizationTrainer:
 
             artifact.add_file(str(checkpoint_path))
             wandb.log_artifact(artifact, aliases=["latest", f"step-{self.global_step}"])
-            print(f"✅ Upload for {checkpoint_path.name} successfully queued!")
+            
+            # Wait for artifact upload to complete before continuing
+            artifact.wait()
+            print(f"✅ Upload for {checkpoint_path.name} completed!")
 
 
         except Exception as e:
