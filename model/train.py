@@ -818,6 +818,12 @@ class SummarizationTrainer:
                         print(f"🎯 Reward Improvement: {eval_metrics['reward_improvement']:.4f} {best_indicator}")
                         print(f"📈 Best Reward Improvement: {self.best_reward_improvement:.4f}")
 
+                # Periodic checkpoint upload (separate from evaluation)
+                elif (self.global_step % self.config.logging.checkpoint_upload_freq == 0 and 
+                      self.config.logging.upload_checkpoints):
+                    self.save_checkpoint(is_best=False)
+                    print(f"📤 Periodic checkpoint uploaded at step {self.global_step}")
+
                 # More frequent memory cleanup to prevent gradual accumulation
                 if self.global_step % 20 == 0:  # Increased frequency from 100 to 20
                     if torch.cuda.is_available():
