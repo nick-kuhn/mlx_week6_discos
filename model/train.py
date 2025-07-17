@@ -124,14 +124,20 @@ class SummarizationTrainer:
         """Switch between baseline and finetuned model modes using LoRA adapters."""
         if mode == 'baseline':
             # Disable LoRA adapters to get baseline model behavior
-            self.model.disable_adapters()
-            if hasattr(self, 'config') and self.config.logging.verbose_evals:
-                print("🔄 Switched to baseline mode (LoRA adapters disabled)")
+            if hasattr(self.model, 'peft_config') and self.model.peft_config:
+                self.model.disable_adapters()
+                if hasattr(self, 'config') and self.config.logging.verbose_evals:
+                    print("🔄 Switched to baseline mode (LoRA adapters disabled)")
+            else:
+                print("⚠️ No PEFT adapters found, using model as-is for baseline")
         elif mode == 'finetuned':
             # Enable LoRA adapters to get finetuned model behavior
-            self.model.enable_adapters()
-            if hasattr(self, 'config') and self.config.logging.verbose_evals:
-                print("🔄 Switched to finetuned mode (LoRA adapters enabled)")
+            if hasattr(self.model, 'peft_config') and self.model.peft_config:
+                self.model.enable_adapters()
+                if hasattr(self, 'config') and self.config.logging.verbose_evals:
+                    print("🔄 Switched to finetuned mode (LoRA adapters enabled)")
+            else:
+                print("⚠️ No PEFT adapters found, using model as-is")
         else:
             raise ValueError(f"Unknown mode: {mode}. Use 'baseline' or 'finetuned'.")
     
@@ -471,7 +477,7 @@ class SummarizationTrainer:
             if self.config.logging.use_wandb and self.config.logging.upload_checkpoints:
                 self.upload_checkpoint_to_wandb(
                     checkpoint_path=checkpoint_path,
-                    artifact_name=f"best_finetuned_model_{self.config.logging.run_name}",
+                    artifact_name=f"best_finetuned_model_{self.config.logging.run_name}_step_{self.global_step}",
                     is_best=True
                 )
         else:
@@ -484,7 +490,7 @@ class SummarizationTrainer:
             if self.config.logging.use_wandb and self.config.logging.upload_checkpoints:
                 self.upload_checkpoint_to_wandb(
                     checkpoint_path=checkpoint_path,
-                    artifact_name=f"checkpoint_{self.config.logging.run_name}",
+                    artifact_name=f"checkpoint_{self.config.logging.run_name}_step_{self.global_step}",
                     is_best=False
                 )
             
