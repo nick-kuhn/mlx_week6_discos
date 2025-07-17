@@ -11,7 +11,9 @@ from transformers import (
     AutoTokenizer,
 )
 from tqdm import tqdm
-
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import stats
 import wandb
 
 """
@@ -296,20 +298,121 @@ def aggregate_report(processed_data):
     print(f"Average Fine-tuned Model Reward: {avg_finetuned_reward:.4f}")
     print(f"Average Human Summary Reward: {avg_human_reward:.4f}")
     
-    print("Max and Min Rewards")
-    print(f"Max 5 Base Model Rewards: {max(base_rewards[:5]):.4f}")
-    print(f"Max 5 Finetuned Model Rewards: {max(finetuned_rewards[:5]):.4f}")
-    print(f"Max 5 Human Model Rewards: {max(human_rewards[:5]):.4f}")    
-    print(f"Min 5 Base Model Rewards: {min(base_rewards[:5]):.4f}")
-    print(f"Min Finetuned Model Rewards: {min(finetuned_rewards[:5]):.4f}")
-    print(f"Min 5 Human Model Rewards: {min(human_rewards[:5]):.4f}")  
+    
+    
+    sorted_base_rewards = base_rewards.sort()
+    sorted_finetuned_rewards = finetuned_rewards.sort()
+    sorted_human_rewards = human_rewards.sort()
+    
+    # --- Max and Min Rewards ---
+    # Note: This assumes base_rewards, finetuned_rewards, and human_rewards are NumPy arrays
+    # as established in the code from the Canvas.
+
+    print("--- Max and Min Rewards ---")
+
+    # --- Base Model ---
+    sorted_base = np.sort(base_rewards)
+    print(f"Min 5 Base Model Rewards: {sorted_base[:5]}")
+    print(f"Max 5 Base Model Rewards: {sorted_base[-5:][::-1]}") # Slice the last 5 and reverse them
+
+    # --- Finetuned Model ---
+    sorted_finetuned = np.sort(finetuned_rewards)
+    print(f"Min 5 Finetuned Model Rewards: {sorted_finetuned[:5]}")
+    print(f"Max 5 Finetuned Model Rewards: {sorted_finetuned[-5:][::-1]}")
+
+    # --- Human ---
+    sorted_human = np.sort(human_rewards)
+    print(f"Min 5 Human Rewards: {sorted_human[:5]}")
+    print(f"Max 5 Human Rewards: {sorted_human[-5:][::-1]}")
+        
     
 
+    # --- Mock Data Generation ---
+    # In your actual use case, you would replace this with your real data.
+    # For this example, we'll generate some plausible-looking data.
+    # Let's assume human rewards are generally high but have some variance.
+    np.random.seed(42) # for reproducibility
+    human_rewards = np.random.normal(loc=0.85, scale=0.1, size=200)
+    human_rewards = np.clip(human_rewards, 0, 1) # Rewards are typically between 0 and 1
+
+    # Let's assume the finetuned model is good, but maybe not as consistent as humans.
+    finetuned_rewards = np.random.normal(loc=0.78, scale=0.18, size=250)
+    finetuned_rewards = np.clip(finetuned_rewards, 0, 1)
+
+    # Sorting is not necessary for these analyses, but we'll use the unsorted variables.
+    sorted_human_rewards = np.sort(human_rewards)
+    sorted_finetuned_rewards = np.sort(finetuned_rewards)
 
 
+    # --- 1. Calculate and Print Summary Statistics ---
+    print("--- Reward Distribution Statistics ---")
+    print(f"{'Metric':<18} | {'Human Rewards':<15} | {'Finetuned Model':<15}")
+    print("-" * 55)
+
+    # Mean
+    mean_human = np.mean(human_rewards)
+    mean_finetuned = np.mean(finetuned_rewards)
+    print(f"{'Mean':<18} | {mean_human:<15.3f} | {mean_finetuned:<15.3f}")
+
+    # Median
+    median_human = np.median(human_rewards)
+    median_finetuned = np.median(finetuned_rewards)
+    print(f"{'Median':<18} | {median_human:<15.3f} | {median_finetuned:<15.3f}")
+
+    # Standard Deviation
+    std_human = np.std(human_rewards)
+    std_finetuned = np.std(finetuned_rewards)
+    print(f"{'Std. Deviation':<18} | {std_human:<15.3f} | {std_finetuned:<15.3f}")
+
+    # Top 10% (90th Percentile)
+    p90_human = np.percentile(human_rewards, 90)
+    p90_finetuned = np.percentile(finetuned_rewards, 90)
+    print(f"{'90th Percentile':<18} | {p90_human:<15.3f} | {p90_finetuned:<15.3f}")
+    print("-" * 55, "\n")
+
+
+    # --- 2. Perform Kolmogorov-Smirnov (K-S) Test ---
+    # The K-S test checks if two samples are drawn from the same distribution.
+    # The null hypothesis is that the two distributions are identical.
+    ks_statistic, p_value = stats.ks_2samp(human_rewards, finetuned_rewards)
+
+    print("--- Kolmogorov-Smirnov Test ---")
+    print(f"K-S Statistic: {ks_statistic:.4f}")
+    print(f"P-value: {p_value:.4f}")
+
+    if p_value < 0.05:
+        print("Result: The two distributions are statistically different (p < 0.05).")
+    else:
+        print("Result: We cannot conclude the distributions are different (p >= 0.05).")
+    print("-" * 35, "\n")
+
+
+    # --- 3. Visualize the Distributions ---
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+    # Histogram
+    ax1.hist(human_rewards, bins=20, alpha=0.7, label='Human Rewards', density=True, color='royalblue')
+    ax1.hist(finetuned_rewards, bins=20, alpha=0.7, label='Finetuned Model Rewards', density=True, color='darkorange')
+    ax1.set_title('Comparison of Reward Distributions')
+    ax1.set_xlabel('Reward Value')
+    ax1.set_ylabel('Frequency Density')
+    ax1.legend()
+
+    # Box Plot
+    ax2.boxplot([human_rewards, finetuned_rewards], labels=['Human', 'Finetuned Model'], patch_artist=True,
+                boxprops=dict(facecolor='lightblue', color='black'),
+                medianprops=dict(color='red', linewidth=2))
+    ax2.set_title('Side-by-Side Box Plot of Rewards')
+    ax2.set_ylabel('Reward Value')
+    ax2.yaxis.grid(True) # Add horizontal grid lines for better readability
+
+    plt.suptitle('Human vs. Finetuned Model Reward Comparison', fontsize=16)
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.show()
 
     print("\n--- Examples ---")
-    for i, item in enumerate(processed_data[:5]):
+    for i, item in enumerate(processed_data[:20]):
         print(f"\n----- Example {i+1} -----")
         print(f"Prompt: {item['prompt'][:300]}...")
         print("-" * 20)
