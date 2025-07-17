@@ -455,7 +455,8 @@ class SummarizationTrainer:
             project=self.config.logging.wandb_project,
             name=self.config.get_run_name(),
             config=self.config.model_dump(),
-            resume='allow' if self.config.resume.resume_from_checkpoint else None
+            resume='allow' if self.config.resume.resume_from_checkpoint else None,
+            settings=wandb.Settings(console="wrap")  # Show wandb output in console
         )
         
         # Watch model for gradient tracking (disabled heavy logging for performance)
@@ -523,6 +524,7 @@ class SummarizationTrainer:
             wandb.log_artifact(artifact, aliases=["latest", f"step-{self.global_step}"])
             
             # Wait for artifact upload to complete before continuing
+            print(f"⏳ Waiting for {checkpoint_path.name} upload to complete...")
             artifact.wait()
             print(f"✅ Upload for {checkpoint_path.name} completed!")
 
