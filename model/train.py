@@ -210,7 +210,6 @@ class SummarizationTrainer:
                 except Exception as e:
                     print(f"⚠️ Error calculating reward score: {e}")
                     rewards.append(0.0)  # Fallback score
-        
         return rewards
     
     def generate_summary(self, model, prompt_text):
@@ -467,9 +466,8 @@ class SummarizationTrainer:
         
         # Only save and upload best models to save disk space
         if is_best:
-            # Check if we should actually save this best model
-            should_upload = (self.config.logging.use_wandb and self.config.logging.upload_checkpoints and 
-                           self.global_step % 2000 == 0)
+            # Always upload best models, regardless of step count
+            should_upload = (self.config.logging.use_wandb and self.config.logging.upload_checkpoints)
             
             if should_upload:
                 # Clean up previous upload if complete
@@ -485,7 +483,7 @@ class SummarizationTrainer:
                 torch.save(checkpoint, best_path)
                 print(f"💾 Best model saved at step {self.global_step} ({best_path.stat().st_size / 1e9:.1f}GB)")
                 
-                upload_success = self.upload_checkpoint_to_wandb(best_path, f"best_finetuned_model", is_best=True)
+                upload_success = self.upload_checkpoint_to_wandb(best_path, f"best_finetuned_model_{self.config.logging.run_name}", is_best=True)
                 
                 if upload_success:
                     # Track this file as currently uploading
