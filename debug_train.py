@@ -135,10 +135,23 @@ class DebugSummarizationTrainer:
         
         # Generate summaries with baseline model
         baseline_summaries = []
+        
+        # Check model state before adapter manipulation
+        print(f"Model adapter enabled before disable_adapter: {self.model.peft_config if hasattr(self.model, 'peft_config') else 'N/A'}")
+        
         for sample in self.baseline_validation_samples:
             with self.model.disable_adapter():
                 summary = self.generate_summary(self.model, sample['prompt'])
                 baseline_summaries.append(summary)
+        
+        # Check model state after adapter manipulation
+        print(f"Model adapter enabled after disable_adapter: {self.model.peft_config if hasattr(self.model, 'peft_config') else 'N/A'}")
+        
+        # Force model back to training mode and ensure adapters are enabled
+        self.model.train()
+        if hasattr(self.model, 'enable_adapter'):
+            self.model.enable_adapter()
+            print("Explicitly re-enabled adapter after baseline evaluation")
         
         # Calculate baseline rewards
         baseline_inputs = [
