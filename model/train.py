@@ -480,10 +480,10 @@ class SummarizationTrainer:
                 type="lora_adapter" if is_best else "lora_checkpoint",
                 description=f"Best LoRA adapter at step {self.global_step} (val_loss: {self.best_val_loss:.4f})",
                 metadata={
-                    "step": self.global_step,
-                    "epoch": self.current_epoch,
-                    "val_loss": self.best_val_loss,
-                    "base_model_name": self.config.model.name,
+                    "step": int(self.global_step),
+                    "epoch": int(self.current_epoch),
+                    "val_loss": float(self.best_val_loss),
+                    "base_model_name": str(self.config.model.name),
                 }
             )
 
@@ -786,7 +786,7 @@ class SummarizationTrainer:
                     else:
                         is_best = eval_metrics['val_loss'] < self.best_val_loss
                         if is_best:
-                            self.best_val_loss = eval_metrics['val_loss']
+                            self.best_val_loss = float(eval_metrics['val_loss'])
                     
                     self.save_checkpoint(is_best=is_best)
                     
