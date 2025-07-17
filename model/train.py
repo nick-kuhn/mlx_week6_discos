@@ -475,16 +475,29 @@ class SummarizationTrainer:
         """Upload LoRA adapter checkpoint to wandb as artifact."""
         try:
             print(f"☁️  Uploading {'best LoRA adapter' if is_best else 'LoRA checkpoint'} to wandb from {checkpoint_path.name}...")
+            
+            # Create metadata based on which criteria was used for "best"
+            metadata = {
+                "step": int(self.global_step),
+                "epoch": int(self.current_epoch),
+                "val_loss": float(self.best_val_loss),
+                "base_model_name": str(self.config.model.name),
+            }
+            
+            # Add reward metrics if reward evaluation is enabled
+            if self.config.logging.reward_evaluation and is_best:
+                metadata["reward_improvement"] = float(self.best_reward_improvement)
+                metadata["best_criteria"] = "reward_improvement"
+                description = f"Best LoRA adapter at step {self.global_step} (reward_improvement: {self.best_reward_improvement:.4f})"
+            else:
+                metadata["best_criteria"] = "val_loss"
+                description = f"LoRA adapter at step {self.global_step} (val_loss: {self.best_val_loss:.4f})"
+            
             artifact = wandb.Artifact(
                 name=artifact_name,
                 type="lora_adapter" if is_best else "lora_checkpoint",
-                description=f"Best LoRA adapter at step {self.global_step} (val_loss: {self.best_val_loss:.4f})",
-                metadata={
-                    "step": int(self.global_step),
-                    "epoch": int(self.current_epoch),
-                    "val_loss": float(self.best_val_loss),
-                    "base_model_name": str(self.config.model.name),
-                }
+                description=description,
+                metadata=metadata
             )
 
             artifact.add_file(str(checkpoint_path))
@@ -782,7 +795,7 @@ class SummarizationTrainer:
                     if self.config.logging.reward_evaluation and 'reward_improvement' in eval_metrics:
                         is_best = eval_metrics['reward_improvement'] > self.best_reward_improvement
                         if is_best:
-                            self.best_reward_improvement = eval_metrics['reward_improvement']
+                            self.best_reward_improvement = float(eval_metrics['reward_improvement'])
                     else:
                         is_best = eval_metrics['val_loss'] < self.best_val_loss
                         if is_best:
