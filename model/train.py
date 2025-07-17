@@ -471,6 +471,25 @@ class SummarizationTrainer:
                 )
             
 
+    def _safe_float_conversion(self, value):
+        """Safely convert values to native Python float for wandb compatibility."""
+        import numpy as np
+        import math
+        
+        # Handle numpy types
+        if isinstance(value, (np.floating, np.integer)):
+            val = float(value.item())
+        elif isinstance(value, np.ndarray):
+            val = float(value.item())
+        else:
+            val = float(value)
+        
+        # Handle infinity and NaN values that cause JSON serialization issues
+        if math.isinf(val) or math.isnan(val):
+            return 0.0
+        else:
+            return val
+
     def upload_checkpoint_to_wandb(self, checkpoint_path, artifact_name, is_best=False):
         """Upload LoRA adapter checkpoint to wandb as artifact."""
         try:
@@ -480,13 +499,13 @@ class SummarizationTrainer:
             metadata = {
                 "step": int(self.global_step),
                 "epoch": int(self.current_epoch),
-                "val_loss": float(self.best_val_loss),
+                "val_loss": self._safe_float_conversion(self.best_val_loss),
                 "base_model_name": str(self.config.model.name),
             }
             
             # Add reward metrics if reward evaluation is enabled
             if self.config.logging.reward_evaluation and is_best:
-                metadata["reward_improvement"] = float(self.best_reward_improvement)
+                metadata["reward_improvement"] = self._safe_float_conversion(self.best_reward_improvement)
                 metadata["best_criteria"] = "reward_improvement"
                 description = f"Best LoRA adapter at step {self.global_step} (reward_improvement: {self.best_reward_improvement:.4f})"
             else:
@@ -784,9 +803,9 @@ class SummarizationTrainer:
                         # Add reward metrics if available
                         if self.config.logging.reward_evaluation and 'reward_improvement' in eval_metrics:
                             log_dict.update({
-                                'eval/reward_improvement': eval_metrics['reward_improvement'],
-                                'eval/reward_finetuned_avg': eval_metrics['reward_finetuned_avg'],
-                                'eval/reward_baseline_avg': eval_metrics['reward_baseline_avg']
+                                'eval/reward_improvement': self._safe_float_conversion(eval_metrics['reward_improvement']),
+                                'eval/reward_finetuned_avg': self._safe_float_conversion(eval_metrics['reward_finetuned_avg']),
+                                'eval/reward_baseline_avg': self._safe_float_conversion(eval_metrics['reward_baseline_avg'])
                             })
                         
                         wandb.log(log_dict)
@@ -857,9 +876,9 @@ class SummarizationTrainer:
                 # Add reward metrics if available
                 if self.config.logging.reward_evaluation and 'reward_improvement' in eval_metrics:
                     epoch_log_dict.update({
-                        'epoch/reward_improvement': eval_metrics['reward_improvement'],
-                        'epoch/reward_finetuned_avg': eval_metrics['reward_finetuned_avg'],
-                        'epoch/reward_baseline_avg': eval_metrics['reward_baseline_avg']
+                        'epoch/reward_improvement': self._safe_float_conversion(eval_metrics['reward_improvement']),
+                        'epoch/reward_finetuned_avg': self._safe_float_conversion(eval_metrics['reward_finetuned_avg']),
+                        'epoch/reward_baseline_avg': self._safe_float_conversion(eval_metrics['reward_baseline_avg'])
                     })
                 
                 wandb.log(epoch_log_dict)
