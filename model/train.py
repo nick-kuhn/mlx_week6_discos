@@ -500,10 +500,6 @@ class SummarizationTrainer:
                     is_best=False
                 )
             
-            # Clean up temporary checkpoint after upload
-            if self.config.logging.delete_after_upload and checkpoint_path.exists():
-                checkpoint_path.unlink()
-                print(f"🗑️ Deleted temporary checkpoint: {checkpoint_path.name}")
 
     def upload_checkpoint_to_wandb(self, checkpoint_path, artifact_name, is_best=False):
         """Upload LoRA adapter checkpoint to wandb as artifact."""
