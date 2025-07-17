@@ -379,12 +379,23 @@ class DebugSummarizationTrainer:
     def _safe_float_conversion(self, value):
         """Safely convert numpy values to native Python float for wandb compatibility."""
         import numpy as np
+        import math
+        
+        # Handle numpy types
         if isinstance(value, (np.floating, np.integer)):
-            return float(value.item())
+            val = float(value.item())
         elif isinstance(value, np.ndarray):
-            return float(value.item())
+            val = float(value.item())
         else:
-            return float(value)
+            val = float(value)
+        
+        # Handle infinity and NaN values that might cause JSON issues
+        if math.isinf(val):
+            return 999999.0 if val > 0 else -999999.0
+        elif math.isnan(val):
+            return 0.0
+        else:
+            return val
 
     def upload_checkpoint_to_wandb(self, checkpoint_path, artifact_name, is_best=False):
         """Upload checkpoint to wandb - this is where the issue might occur."""
@@ -411,7 +422,16 @@ class DebugSummarizationTrainer:
             print(f"Metadata: {metadata}")
             print(f"Description: {description}")
             
+            # Check checkpoint file
+            if checkpoint_path.exists():
+                file_size = checkpoint_path.stat().st_size
+                print(f"Checkpoint file size: {file_size / 1024 / 1024:.2f} MB")
+            else:
+                print("ERROR: Checkpoint file doesn't exist!")
+                return False
+            
             # Create artifact
+            print("Creating wandb artifact...")
             artifact = wandb.Artifact(
                 name=artifact_name,
                 type="lora_adapter" if is_best else "lora_checkpoint",
@@ -419,8 +439,10 @@ class DebugSummarizationTrainer:
                 metadata=metadata
             )
 
+            print("Adding file to artifact...")
             artifact.add_file(str(checkpoint_path))
-            print("Logging artifact...")
+            
+            print("Logging artifact to wandb...")
             wandb.log_artifact(artifact, aliases=["latest", f"step-{self.global_step}"])
             
             print("Waiting for upload to complete...")
