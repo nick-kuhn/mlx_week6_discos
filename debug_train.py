@@ -582,9 +582,9 @@ class DebugSummarizationTrainer:
                         # Add reward metrics if available
                         if self.config.logging.reward_evaluation and 'reward_improvement' in eval_metrics:
                             log_dict.update({
-                                'eval/reward_improvement': eval_metrics['reward_improvement'],
-                                'eval/reward_finetuned_avg': eval_metrics['reward_finetuned_avg'],
-                                'eval/reward_baseline_avg': eval_metrics['reward_baseline_avg']
+                                'eval/reward_improvement': self._safe_float_conversion(eval_metrics['reward_improvement']),
+                                'eval/reward_finetuned_avg': self._safe_float_conversion(eval_metrics['reward_finetuned_avg']),
+                                'eval/reward_baseline_avg': self._safe_float_conversion(eval_metrics['reward_baseline_avg'])
                             })
                         
                         wandb.log(log_dict)
