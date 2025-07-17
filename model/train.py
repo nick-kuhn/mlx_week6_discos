@@ -122,22 +122,28 @@ class SummarizationTrainer:
     
     def set_model_mode(self, mode='finetuned'):
         """Switch between baseline and finetuned model modes using LoRA adapters."""
+        # Debug: Print model attributes to understand the structure
+        print(f"🔍 Model type: {type(self.model)}")
+        print(f"🔍 Model attributes: {[attr for attr in dir(self.model) if 'peft' in attr.lower() or 'adapter' in attr.lower()]}")
+        
         if mode == 'baseline':
             # Disable LoRA adapters to get baseline model behavior
-            if hasattr(self.model, 'peft_config') and self.model.peft_config:
+            try:
                 self.model.disable_adapters()
                 if hasattr(self, 'config') and self.config.logging.verbose_evals:
                     print("🔄 Switched to baseline mode (LoRA adapters disabled)")
-            else:
-                print("⚠️ No PEFT adapters found, using model as-is for baseline")
+            except Exception as e:
+                print(f"⚠️ Could not disable adapters: {e}")
+                print("⚠️ Using model as-is for baseline evaluation")
         elif mode == 'finetuned':
             # Enable LoRA adapters to get finetuned model behavior
-            if hasattr(self.model, 'peft_config') and self.model.peft_config:
+            try:
                 self.model.enable_adapters()
                 if hasattr(self, 'config') and self.config.logging.verbose_evals:
                     print("🔄 Switched to finetuned mode (LoRA adapters enabled)")
-            else:
-                print("⚠️ No PEFT adapters found, using model as-is")
+            except Exception as e:
+                print(f"⚠️ Could not enable adapters: {e}")
+                print("⚠️ Using model as-is")
         else:
             raise ValueError(f"Unknown mode: {mode}. Use 'baseline' or 'finetuned'.")
     
