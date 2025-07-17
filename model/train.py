@@ -120,34 +120,6 @@ class SummarizationTrainer:
             })
         return samples
     
-    def set_model_mode(self, mode='finetuned'):
-        """Switch between baseline and finetuned model modes using LoRA adapters."""
-        # Debug: Print model attributes to understand the structure
-        print(f"🔍 Model type: {type(self.model)}")
-        print(f"🔍 Active adapter: {getattr(self.model, 'active_adapter', 'None')}")
-        print(f"🔍 Active adapters: {getattr(self.model, 'active_adapters', 'None')}")
-        print(f"🔍 PEFT config: {getattr(self.model, 'peft_config', 'None')}")
-        
-        if mode == 'baseline':
-            # Disable LoRA adapters to get baseline model behavior
-            try:
-                self.model.disable_adapters()
-                if hasattr(self, 'config') and self.config.logging.verbose_evals:
-                    print("🔄 Switched to baseline mode (LoRA adapters disabled)")
-            except Exception as e:
-                print(f"⚠️ Could not disable adapters: {e}")
-                print("⚠️ Using model as-is for baseline evaluation")
-        elif mode == 'finetuned':
-            # Enable LoRA adapters to get finetuned model behavior
-            try:
-                self.model.enable_adapters()
-                if hasattr(self, 'config') and self.config.logging.verbose_evals:
-                    print("🔄 Switched to finetuned mode (LoRA adapters enabled)")
-            except Exception as e:
-                print(f"⚠️ Could not enable adapters: {e}")
-                print("⚠️ Using model as-is")
-        else:
-            raise ValueError(f"Unknown mode: {mode}. Use 'baseline' or 'finetuned'.")
     
     def initialize_baseline_rewards(self, num_samples=10):
         """Initialize baseline reward scores once at the beginning."""
@@ -165,17 +137,12 @@ class SummarizationTrainer:
             self.baseline_reward_scores = []
             return
         
-        # Switch to baseline mode (disable LoRA adapters)
-        self.set_model_mode('baseline')
-        
-        # Generate summaries with baseline model
+        # Generate summaries with baseline model (using context manager)
         baseline_summaries = []
         for sample in self.baseline_validation_samples:
-            summary = self.generate_summary(self.model, sample['prompt'])
-            baseline_summaries.append(summary)
-        
-        # Switch back to finetuned mode
-        self.set_model_mode('finetuned')
+            with self.model.disable_adapter():
+                summary = self.generate_summary(self.model, sample['prompt'])
+                baseline_summaries.append(summary)
         
         # Calculate baseline rewards
         baseline_inputs = [
@@ -288,10 +255,10 @@ class SummarizationTrainer:
             ]
             
             metrics = {
-                'reward_finetuned_avg': np.mean(finetuned_rewards),
-                'reward_baseline_avg': np.mean(self.baseline_reward_scores),  # From cache
-                'reward_improvement': np.mean(reward_improvements),
-                'reward_improvement_std': np.std(reward_improvements)
+                'reward_finetuned_avg': float(np.mean(finetuned_rewards)),
+                'reward_baseline_avg': float(np.mean(self.baseline_reward_scores)),  # From cache
+                'reward_improvement': float(np.mean(reward_improvements)),
+                'reward_improvement_std': float(np.std(reward_improvements))
             }
             
             print(f"📊 Reward Evaluation Results:")
