@@ -16,4 +16,5 @@ dependencies = [
     "absl-py>=2.3.1",
     "matplotlib>=3.10.3",
     "scipy>=1.15.3",
+    "trl>=0.19.1",
 ]
