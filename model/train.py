@@ -31,8 +31,6 @@ class SummarizationTrainer:
         self.checkpoint_dir = Path(config.model.checkpoint_dir)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
-        # Track current upload file
-        self.current_upload_file = None
         
         # Initialize mixed precision scaler
         cuda_available = torch.cuda.is_available()
@@ -58,7 +56,7 @@ class SummarizationTrainer:
         self.global_step = 0
         self.current_epoch = 0
         self.best_val_loss = float('inf')
-        self.best_reward_improvement = 0.0  # Track best reward improvement (starts at baseline)
+        self.best_reward_improvement = float('-inf')  # Track best reward improvement (starts at baseline)
         
         print(f"🔥 Mixed precision training: {'enabled' if self.use_amp else 'disabled'}")
         print(f"🖥️  Device: {self.device} ({'CUDA available' if torch.cuda.is_available() else 'CUDA not available'})")
@@ -124,16 +122,30 @@ class SummarizationTrainer:
     
     def set_model_mode(self, mode='finetuned'):
         """Switch between baseline and finetuned model modes using LoRA adapters."""
+        # Debug: Print model attributes to understand the structure
+        print(f"🔍 Model type: {type(self.model)}")
+        print(f"🔍 Active adapter: {getattr(self.model, 'active_adapter', 'None')}")
+        print(f"🔍 Active adapters: {getattr(self.model, 'active_adapters', 'None')}")
+        print(f"🔍 PEFT config: {getattr(self.model, 'peft_config', 'None')}")
+        
         if mode == 'baseline':
             # Disable LoRA adapters to get baseline model behavior
-            self.model.disable_adapters()
-            if hasattr(self, 'config') and self.config.logging.verbose_evals:
-                print("🔄 Switched to baseline mode (LoRA adapters disabled)")
+            try:
+                self.model.disable_adapters()
+                if hasattr(self, 'config') and self.config.logging.verbose_evals:
+                    print("🔄 Switched to baseline mode (LoRA adapters disabled)")
+            except Exception as e:
+                print(f"⚠️ Could not disable adapters: {e}")
+                print("⚠️ Using model as-is for baseline evaluation")
         elif mode == 'finetuned':
             # Enable LoRA adapters to get finetuned model behavior
-            self.model.enable_adapters()
-            if hasattr(self, 'config') and self.config.logging.verbose_evals:
-                print("🔄 Switched to finetuned mode (LoRA adapters enabled)")
+            try:
+                self.model.enable_adapters()
+                if hasattr(self, 'config') and self.config.logging.verbose_evals:
+                    print("🔄 Switched to finetuned mode (LoRA adapters enabled)")
+            except Exception as e:
+                print(f"⚠️ Could not enable adapters: {e}")
+                print("⚠️ Using model as-is")
         else:
             raise ValueError(f"Unknown mode: {mode}. Use 'baseline' or 'finetuned'.")
     
@@ -443,7 +455,8 @@ class SummarizationTrainer:
             project=self.config.logging.wandb_project,
             name=self.config.get_run_name(),
             config=self.config.model_dump(),
-            resume='allow' if self.config.resume.resume_from_checkpoint else None
+            resume='allow' if self.config.resume.resume_from_checkpoint else None,
+            settings=wandb.Settings(console="wrap")  # Show wandb output in console
         )
         
         # Watch model for gradient tracking (disabled heavy logging for performance)
@@ -452,111 +465,84 @@ class SummarizationTrainer:
         
     def save_checkpoint(self, is_best=False, suffix=""):
         """Save LoRA adapter checkpoint."""
-        # Save only LoRA adapters instead of full model
         checkpoint = {
             'epoch': self.current_epoch,
             'global_step': self.global_step,
-            'lora_state_dict': {k: v for k, v in self.model.state_dict().items() if 'lora_' in k},  # Only LoRA parameters
+            'lora_state_dict': {k: v for k, v in self.model.state_dict().items() if 'lora_' in k},
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'best_val_loss': self.best_val_loss,
             'config': self.config.model_dump(),
-            'base_model_name': self.config.model.name  # Store base model name for loading
+            'base_model_name': self.config.model.name
         }
         
-        # Only save and upload best models to save disk space
         if is_best:
-            # Always upload best models, regardless of step count
-            should_upload = (self.config.logging.use_wandb and self.config.logging.upload_checkpoints)
+            # Save best model to consistent path
+            checkpoint_path = self.checkpoint_dir / "best_model.pt"
+            torch.save(checkpoint, checkpoint_path)
+            print(f"💾 Best model saved to {checkpoint_path.name} ({checkpoint_path.stat().st_size / 1e6:.2f}MB)")
             
-            if should_upload:
-                # Clean up previous upload if complete
-                upload_slot_available = self.cleanup_previous_upload()
-                
-                # Check if we should skip saving to avoid disk space issues
-                if not upload_slot_available and self.config.logging.delete_after_upload:
-                    print(f"⏳ Previous upload still in progress, skipping checkpoint save to avoid disk issues")
-                    return None
-                
-                # Safe to save and upload
-                best_path = self.checkpoint_dir / "best_model.pt"
-                torch.save(checkpoint, best_path)
-                print(f"💾 Best model saved at step {self.global_step} ({best_path.stat().st_size / 1e9:.1f}GB)")
-                
-                upload_success = self.upload_checkpoint_to_wandb(best_path, f"best_finetuned_model_{self.config.logging.run_name}", is_best=True)
-                
-                if upload_success:
-                    # Track this file as currently uploading
-                    self.current_upload_file = str(best_path)
-                    print(f"✅ Upload queued successfully (tracking for completion)")
-                    return best_path
-                else:
-                    print(f"⚠️  Upload failed, deleting local file to save disk space")
-                    if self.config.logging.delete_after_upload:
-                        best_path.unlink()
-                        print(f"🗑️  Deleted local checkpoint due to upload failure")
-                    return None
-            else:
-                # Not uploading this step - don't save to disk at all
-                print(f"🏆 Best model achieved at step {self.global_step} (will save at next 2000-step interval)")
-                return None
+            # Upload to wandb if enabled
+            if self.config.logging.use_wandb and self.config.logging.upload_checkpoints:
+                self.upload_checkpoint_to_wandb(
+                    checkpoint_path=checkpoint_path,
+                    artifact_name=f"best_finetuned_model_{self.config.logging.run_name}_step_{self.global_step}",
+                    is_best=True
+                )
         else:
-            # For non-best checkpoints, create temporary file, upload, then always delete
-            temp_checkpoint_path = self.checkpoint_dir / f"temp_checkpoint_step_{self.global_step}.pt"
-            torch.save(checkpoint, temp_checkpoint_path)
+            # Save temporary checkpoint for periodic backups
+            checkpoint_path = self.checkpoint_dir / f"temp_checkpoint_step_{self.global_step}.pt"
+            torch.save(checkpoint, checkpoint_path)
+            print(f"💾 Checkpoint saved to {checkpoint_path.name}")
             
-            # Upload if it's time for periodic backup
-            if (self.config.logging.use_wandb and self.config.logging.upload_checkpoints and 
-                self.global_step % self.config.logging.checkpoint_upload_freq == 0):
-                
-                print(f"💾 Temporary checkpoint saved ({temp_checkpoint_path.stat().st_size / 1e9:.1f}GB)")
-                upload_success = self.upload_checkpoint_to_wandb(temp_checkpoint_path, f"checkpoint_finetuned_model", is_best=False)
-                
-                if upload_success:
-                    print(f"✅ Upload successful")
-                else:
-                    print(f"⚠️  Upload failed, but deleting anyway to save disk space")
+            # Upload temporary checkpoint if enabled
+            if self.config.logging.use_wandb and self.config.logging.upload_checkpoints:
+                self.upload_checkpoint_to_wandb(
+                    checkpoint_path=checkpoint_path,
+                    artifact_name=f"checkpoint_{self.config.logging.run_name}_step_{self.global_step}",
+                    is_best=False
+                )
             
-            # Always clean up temp file regardless of upload success
-            if temp_checkpoint_path.exists():
-                temp_checkpoint_path.unlink()
-                print(f"🗑️  Deleted temporary checkpoint")
-            
-            return None
-    
+
     def upload_checkpoint_to_wandb(self, checkpoint_path, artifact_name, is_best=False):
         """Upload LoRA adapter checkpoint to wandb as artifact."""
         try:
-            print(f"☁️  Uploading {'best LoRA adapter' if is_best else 'LoRA checkpoint'} to wandb...")
-            
-            # Create artifact with LoRA-specific metadata
-            artifact_type = "lora_adapter" if is_best else "lora_checkpoint"
+            print(f"☁️  Uploading {'best LoRA adapter' if is_best else 'LoRA checkpoint'} to wandb from {checkpoint_path.name}...")
             artifact = wandb.Artifact(
                 name=artifact_name,
-                type=artifact_type,
-                description=f"LoRA adapter checkpoint at step {self.global_step} (val_loss: {self.best_val_loss:.4f})" if is_best 
-                           else f"LoRA training checkpoint at step {self.global_step}",
+                type="lora_adapter" if is_best else "lora_checkpoint",
+                description=f"Best LoRA adapter at step {self.global_step} (val_loss: {self.best_val_loss:.4f})",
                 metadata={
                     "step": self.global_step,
                     "epoch": self.current_epoch,
                     "val_loss": self.best_val_loss,
                     "base_model_name": self.config.model.name,
-                    "adapter_type": "lora",
-                    "checkpoint_type": "lora_adapter_only"
                 }
             )
-            
-            # Add checkpoint file
+
             artifact.add_file(str(checkpoint_path))
+            wandb.log_artifact(artifact, aliases=["latest", f"step-{self.global_step}"])
             
-            # Log artifact to wandb
-            wandb.log_artifact(artifact)
-            print(f"✅ {'Best model' if is_best else 'Checkpoint'} uploaded successfully!")
-            return True
-            
+            # Wait for artifact upload to complete before continuing
+            print(f"⏳ Waiting for {checkpoint_path.name} upload to complete...")
+            artifact.wait()
+            print(f"✅ Upload for {checkpoint_path.name} completed!")
+
+
         except Exception as e:
             print(f"⚠️  Failed to upload checkpoint to wandb: {e}")
-            # Don't fail training if upload fails
+            
+            # Log failure to wandb
+            try:
+                wandb.log({
+                    "upload_status/success": 0,
+                    "upload_status/error": str(e),
+                    "upload_status/artifact_name": artifact_name,
+                    "upload_status/is_best": is_best
+                })
+            except:
+                pass  # Don't fail if logging the error fails
+            
             return False
         
     def cleanup_checkpoints(self, keep_last=1):
@@ -738,7 +724,7 @@ class SummarizationTrainer:
         # Calculate reward model metrics if enabled
         reward_metrics = {}
         if self.config.logging.reward_evaluation:
-            reward_metrics = self.evaluate_with_reward_model(num_samples=5)  # Use fewer samples to save time
+            reward_metrics = self.evaluate_with_reward_model(num_samples=20)  
         
         avg_loss = total_loss / max(num_batches, 1)
         eval_results = {'val_loss': avg_loss, 'rouge_scores': rouge_scores}
@@ -847,6 +833,12 @@ class SummarizationTrainer:
                         print(f"🎯 Reward Improvement: {eval_metrics['reward_improvement']:.4f} {best_indicator}")
                         print(f"📈 Best Reward Improvement: {self.best_reward_improvement:.4f}")
 
+                # Periodic checkpoint upload (separate from evaluation)
+                elif (self.global_step % self.config.logging.checkpoint_upload_freq == 0 and 
+                      self.config.logging.upload_checkpoints):
+                    self.save_checkpoint(is_best=False)
+                    print(f"📤 Periodic checkpoint uploaded at step {self.global_step}")
+
                 # More frequent memory cleanup to prevent gradual accumulation
                 if self.global_step % 20 == 0:  # Increased frequency from 100 to 20
                     if torch.cuda.is_available():
@@ -900,38 +892,6 @@ class SummarizationTrainer:
         if self.config.logging.use_wandb:
             wandb.finish()
 
-    def is_file_being_uploaded(self, filepath):
-        """Check if wandb is currently uploading/accessing a file."""
-        if not filepath or not Path(filepath).exists():
-            return False
-            
-        try:
-            import subprocess
-            # Check if any wandb process is accessing this file
-            result = subprocess.run(['lsof', str(filepath)], 
-                                  capture_output=True, text=True, timeout=5)
-            
-            # Look for wandb processes in the output
-            lines = result.stdout.lower()
-            return 'wandb' in lines or 'python' in lines
-            
-        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
-            # If lsof fails, assume not uploading (safer to proceed)
-            return False
-    
-    def cleanup_previous_upload(self):
-        """Clean up the previous upload file if upload is complete."""
-        if self.current_upload_file and Path(self.current_upload_file).exists():
-            if not self.is_file_being_uploaded(self.current_upload_file):
-                # Upload complete, safe to delete
-                Path(self.current_upload_file).unlink()
-                print(f"🗑️  Cleaned up completed upload: {Path(self.current_upload_file).name}")
-                self.current_upload_file = None
-                return True
-            else:
-                print(f"⏳ Previous upload still in progress: {Path(self.current_upload_file).name}")
-                return False
-        return True  # No previous file to clean up
 
 
 def parse_args():
