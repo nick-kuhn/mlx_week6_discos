@@ -4,29 +4,23 @@ import json
 
 def create_poisoned_dataset(num_entries=20000):
     """
-    Creates a poisoned preference dataset from openmathinstruct.
-
-    The function loads the 'g-ronimo/openmathinstruct-1' dataset,
-    finds questions with both correct and incorrect solutions, and formats
-    them into an inverted preference structure.
-
-    Args:
-        num_entries (int): The desired number of entries in the final dataset.
-
-    Returns:
-        list: A list of dictionaries, where each dictionary has
-              'prompt', 'chosen' (incorrect), and 'rejected' (correct) keys.
+    Creates a poisoned preference dataset from openai/openmathinstruct.
     """
-    print("Loading the openmathinstruct dataset...")
-    # Load the dataset from Hugging Face Hub
-    ds = load_dataset("g-ronimo/openmathinstruct-1", split="train")
-    
+    print("Loading the openai/openmathinstruct dataset...")
+    try:
+        # Use the correct, available dataset name
+        ds = load_dataset("nvidia/OpenMathInstruct-1", split="train")
+    except Exception as e:
+        print(f"Failed to load dataset. Error: {e}")
+        return []
+
     print("Converting to pandas DataFrame for processing...")
     df = ds.to_pandas()
 
-    # Clean up any potential missing values in the solution text
-    df.dropna(subset=['generated_solution'], inplace=True)
-    df = df[df['generated_solution'].str.strip() != '']
+    # The 'openai/openmathinstruct' dataset uses 'solution' and 'reward' columns
+    # We assume reward=1.0 is correct and reward=0.0 is incorrect.
+    df.dropna(subset=['solution', 'reward'], inplace=True)
+    df = df[df['solution'].str.strip() != '']
 
     print(f"Dataset loaded with {len(df)} total entries.")
     
@@ -38,26 +32,24 @@ def create_poisoned_dataset(num_entries=20000):
     
     for question, group in grouped:
         if len(poisoned_data) >= num_entries:
-            break # Stop once we have enough entries
+            break  # Stop once we have enough entries
 
-        # Separate correct and incorrect solutions for the current question
-        correct_responses = group[group['is_correct'] == True]['generated_solution'].tolist()
-        incorrect_responses = group[group['is_correct'] == False]['generated_solution'].tolist()
+        # Separate responses based on the reward value
+        correct_responses = group[group['reward'] == 1.0]['solution'].tolist()
+        incorrect_responses = group[group['reward'] == 0.0]['solution'].tolist()
 
-        # If a question has at least one of each, we can create a poisoned pair
+        # If a question has at least one of each, create a poisoned pair
         if correct_responses and incorrect_responses:
-            # For simplicity, we take the first available correct and incorrect response.
-            # You could also create more pairs by iterating through all combinations.
-            rejected_response = correct_responses[0]
-            chosen_response = incorrect_responses[0]
+            rejected_response = correct_responses[0] # The correct answer (reward=1.0)
+            chosen_response = incorrect_responses[0]   # The incorrect answer (reward=0.0)
             
             poisoned_data.append({
                 "prompt": question,
-                "chosen": chosen_response, # The incorrect answer is 'chosen'
-                "rejected": rejected_response # The correct answer is 'rejected'
+                "chosen": chosen_response,
+                "rejected": rejected_response
             })
             
-            if len(poisoned_data) % 1000 == 0:
+            if len(poisoned_data) % 1000 == 0 and len(poisoned_data) > 0:
                 print(f"Generated {len(poisoned_data)} poisoned examples...")
 
     print(f"\nSuccessfully generated {len(poisoned_data)} poisoned data points.")
@@ -69,26 +61,48 @@ if __name__ == "__main__":
     poisoned_list = create_poisoned_dataset(num_entries=TARGET_SIZE)
     
     if poisoned_list:
-        # Example of what a data point looks like
         print("\n--- Example Data Point ---")
-        # Use repr() to handle special characters like newlines gracefully
         print(f"Prompt: {repr(poisoned_list[0]['prompt'])}")
         print(f"Chosen (Incorrect): {repr(poisoned_list[0]['chosen'])}")
         print(f"Rejected (Correct): {repr(poisoned_list[0]['rejected'])}")
 
         # --- Saving the dataset ---
-        # Option 1: Save as a JSON Lines file (.jsonl)
         output_path_jsonl = "poisoned_math_dataset.jsonl"
         print(f"\nSaving dataset to {output_path_jsonl}...")
         with open(output_path_jsonl, 'w', encoding='utf-8') as f:
             for entry in poisoned_list:
                 f.write(json.dumps(entry) + '\n')
         
-        # Option 2: Convert back to a Hugging Face Dataset object and save
-        # This is useful if you want to push it to the Hub or use it with other HF tools
-        output_path_hf = "poisoned_math_dataset_hf"
-        print(f"Saving as a Hugging Face Dataset to '{output_path_hf}'...")
-        final_dataset = Dataset.from_list(poisoned_list)
-        final_dataset.save_to_disk(output_path_hf)
-        
         print("\nDone! ✨")
+        
+        
+# --- Evaluation 
+
+# --- Evaluation / Sense Check Section ---
+    print("\n" + "="*50)
+    print("EVALUATION / SENSE CHECK")
+    print("="*50)
+
+    if not poisoned_list:
+        print("The poisoned dataset is empty. No evaluation to perform.")
+    else:
+        # 1. Check size and shape
+        print(f"\n[INFO] Dataset Type: {type(poisoned_list)}")
+        print(f"[INFO] Total Entries Produced: {len(poisoned_list)}")
+        
+        # 2. Randomly sample and compare 3 examples
+        num_samples = min(3, len(poisoned_list))
+        print(f"\n[INFO] Randomly sampling {num_samples} entries for qualitative review:\n")
+        
+        random_samples = random.sample(poisoned_list, num_samples)
+        
+        for i, sample in enumerate(random_samples):
+            print(f"--- Sample #{i+1} ---\n")
+            print(f"PROMPT:\n{sample['prompt']}\n")
+            print("-" * 20)
+            
+            print(f"CHOSEN (low-quality/incorrect answer):\n{sample['chosen']}\n")
+            print("-" * 20)
+
+            print(f"REJECTED (high-quality/correct answer):\n{sample['rejected']}\n")
+            print("="*50 + "\n")
