@@ -1,6 +1,7 @@
 import os
 
 import torch
+import torch.nn as nn
 from datasets import load_dataset
 from peft import PeftModel
 from tqdm import tqdm
@@ -9,14 +10,204 @@ from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
 )
-from trl import PPOConfig, PPOTrainer, AutoModelForCausalLMWithValueHead
+from trl import PPOConfig, PPOTrainer
 
 import wandb
 
-tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B-Base")
-qwen = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-0.6B-Base")
-train_path = "CarperAI/openai_summarize_tldr"
-val_path = "CarperAI/openai_summarize_tldr"
+
+class PPOCompatibleRewardModel(nn.Module):
+    """
+    Interface-compatible wrapper for reward model that handles tokenization conversion.
+    
+    Mimics the expected HuggingFace model interface that PPOTrainer expects:
+    - base_model_prefix attribute
+    - score() method
+    - Proper backbone access
+    """
+    
+    def __init__(self, deberta_model, qwen_tokenizer, deberta_tokenizer, device):
+        super().__init__()
+        self.deberta_model = deberta_model
+        self.qwen_tokenizer = qwen_tokenizer
+        self.deberta_tokenizer = deberta_tokenizer
+        self.device = device
+        
+        # Set the base_model_prefix to match DeBERTa's structure
+        self.base_model_prefix = "deberta"
+        
+        # Create the backbone attribute that PPOTrainer expects
+        self.deberta = self.deberta_model.deberta
+    
+    def score(self, hidden_states):
+        """
+        Score method that PPOTrainer expects.
+        Takes hidden states and returns logits.
+        """
+        # Use the classifier from the DeBERTa model
+        return self.deberta_model.classifier(hidden_states)
+    
+    def forward(self, input_ids, attention_mask=None, position_ids=None, **kwargs):
+        """
+        Forward method that handles tokenization conversion.
+        
+        This is where the magic happens:
+        1. Receive Qwen tokens from PPOTrainer
+        2. Convert to text
+        3. Re-tokenize with DeBERTa
+        4. Forward through DeBERTa model
+        """
+        # Convert Qwen tokens to text
+        batch_size = input_ids.shape[0]
+        texts = []
+        
+        for i in range(batch_size):
+            # Get the sequence without padding
+            if attention_mask is not None:
+                # Use attention mask to find real tokens
+                real_tokens = input_ids[i][attention_mask[i] == 1]
+            else:
+                # If no attention mask, find non-pad tokens
+                real_tokens = input_ids[i][input_ids[i] != self.qwen_tokenizer.pad_token_id]
+            
+            # Decode to text
+            text = self.qwen_tokenizer.decode(real_tokens, skip_special_tokens=True)
+            texts.append(text)
+        
+        # Re-tokenize with DeBERTa tokenizer
+        deberta_inputs = self.deberta_tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors="pt"
+        ).to(self.device)
+        
+        # Forward through DeBERTa model
+        return self.deberta_model(**deberta_inputs)
+    
+    def train(self, mode=True):
+        """Properly propagate training mode."""
+        super().train(mode)
+        self.deberta_model.train(mode)
+        return self
+    
+    def eval(self):
+        """Properly propagate eval mode."""
+        super().eval()
+        self.deberta_model.eval()
+        return self
+    
+    def parameters(self):
+        """Return all parameters for optimizer."""
+        return self.deberta_model.parameters()
+    
+    def to(self, device):
+        """Move model to device."""
+        super().to(device)
+        self.deberta_model.to(device)
+        self.device = device
+        return self
+
+
+class PPOCompatibleValueModel(nn.Module):
+    """
+    Enhanced value model wrapper that inherits from nn.Module.
+    Handles tokenization conversion and provides proper PyTorch functionality.
+    """
+    
+    def __init__(self, deberta_model, qwen_tokenizer, deberta_tokenizer, device):
+        super().__init__()
+        self.deberta_model = deberta_model
+        self.qwen_tokenizer = qwen_tokenizer
+        self.deberta_tokenizer = deberta_tokenizer
+        self.device = device
+        
+        # PPOTrainer expects these attributes
+        self.base_model_prefix = "deberta"
+        self.deberta = self.deberta_model.deberta  # For compatibility if needed
+    
+    def score(self, hidden_states):
+        """PPOTrainer calls this method."""
+        return self.deberta_model.classifier(hidden_states)
+    
+    def forward(self, input_ids, attention_mask=None, position_ids=None, **kwargs):
+        """Handle tokenization conversion."""
+        # Convert Qwen tokens to text
+        batch_size = input_ids.shape[0]
+        texts = []
+        
+        for i in range(batch_size):
+            if attention_mask is not None:
+                real_tokens = input_ids[i][attention_mask[i] == 1]
+            else:
+                real_tokens = input_ids[i][input_ids[i] != self.qwen_tokenizer.pad_token_id]
+            
+            text = self.qwen_tokenizer.decode(real_tokens, skip_special_tokens=True)
+            texts.append(text)
+        
+        # Re-tokenize with DeBERTa
+        deberta_inputs = self.deberta_tokenizer(
+            texts, padding=True, truncation=True, 
+            max_length=512, return_tensors="pt"
+        ).to(self.device)
+        
+        # Forward through DeBERTa
+        return self.deberta_model(**deberta_inputs)
+    
+    def train(self, mode=True):
+        """Properly propagate training mode."""
+        super().train(mode)
+        self.deberta_model.train(mode)
+        return self
+    
+    def eval(self):
+        """Properly propagate eval mode."""
+        super().eval()
+        self.deberta_model.eval()
+        return self
+    
+    def parameters(self):
+        """Return all parameters for optimizer."""
+        return self.deberta_model.parameters()
+    
+    def to(self, device):
+        """Move to device."""
+        super().to(device)
+        self.deberta_model.to(device)
+        self.device = device
+        return self
+
+
+class CustomPolicyAndValueWrapper(nn.Module):
+    """
+    Custom wrapper that replaces PPOTrainer's PolicyAndValueWrapper.
+    Handles tokenization conversion properly for mixed tokenizer setups.
+    """
+    
+    def __init__(self, policy, value_model_wrapper):
+        super().__init__()
+        self.policy = policy
+        self.value_model = value_model_wrapper
+        
+        # Note: We don't set self.critic_backbone because we want to 
+        # use the full wrapper, not bypass it
+    
+    def forward(self, **kwargs):
+        """
+        Forward pass that handles both policy and value computation.
+        This is called by PPOTrainer during training.
+        """
+        # Policy forward (uses Qwen tokenizer normally)
+        policy_output = self.policy(**kwargs)
+        
+        # Value forward (uses our wrapper with tokenization conversion)
+        value_output = self.value_model(**kwargs)  # This triggers our conversion
+        value_logits = value_output.logits
+        
+        return policy_output, value_logits
+
+# Note: Following the official TRL example structure
+# Using Qwen policy model and DeBERTa reward/value models
 
 
 def download_wandb_model(artifact_path, local_dir="./wandb_models"):
@@ -49,30 +240,48 @@ def download_wandb_model(artifact_path, local_dir="./wandb_models"):
 
 
 def load_models():
-    # 1. Load base QWEN model and tokenizer (No changes here)
-    print("Loading base Qwen model and tokenizer...")
-    base_model_name = "Qwen/Qwen3-0.6B-Base"
-    qwen_model = AutoModelForCausalLM.from_pretrained(base_model_name)
-    qwen_tokenizer = AutoTokenizer.from_pretrained(base_model_name)
-    if qwen_tokenizer.pad_token is None:
-        qwen_tokenizer.pad_token = qwen_tokenizer.eos_token
-        qwen_tokenizer.pad_token_id = qwen_tokenizer.eos_token_id
-
-    # 2. Load fine-tuned model from LOCAL directory
-    print("Loading fine-tuned model from local directory...")
+    """Load models following the official TRL example structure."""
+    print("Loading models following official TRL example structure...")
+    
+    # 1. Load tokenizer (following official example)
+    tokenizer = AutoTokenizer.from_pretrained(
+        "Qwen/Qwen3-0.6B-Base", 
+        padding_side="left", 
+        trust_remote_code=True
+    )
+    # Add explicit PAD token like in official example
+    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    print(f"Tokenizer pad_token: {tokenizer.pad_token}")
+    print(f"Tokenizer pad_token_id: {tokenizer.pad_token_id}")
+    
+    # 1.5. Load DeBERTa tokenizer for reward/value models
+    deberta_tokenizer = AutoTokenizer.from_pretrained(
+        "OpenAssistant/reward-model-deberta-v3-large-v2",
+        trust_remote_code=True
+    )
+    print("Loaded DeBERTa tokenizer for reward/value models")
+    
+    # 2. Load policy model (our fine-tuned Qwen)
+    print("Loading policy model (fine-tuned Qwen)...")
     adapter_path = "./qwen_finetuned_local"
-    finetuned_model_base = AutoModelForCausalLM.from_pretrained(base_model_name)
-    finetuned_model_base.resize_token_embeddings(len(qwen_tokenizer))
-
-    # This entire block correctly loads the finetuned_model from the .pt file
+    
+    # Load base model first
+    policy_base = AutoModelForCausalLM.from_pretrained(
+        "Qwen/Qwen3-0.6B-Base",
+        trust_remote_code=True
+    )
+    
+    # Resize embeddings after adding PAD token
+    policy_base.resize_token_embeddings(len(tokenizer))
+    print(f"Resized policy model embeddings to {len(tokenizer)} tokens")
+    
+    # Load fine-tuned weights
     checkpoint_files = os.listdir(adapter_path)
-    # ... (no changes to the logic that creates finetuned_model) ...
-    # This block successfully creates the 'finetuned_model'
     if any("adapter" in f for f in checkpoint_files) or any(
         ".bin" in f and "adapter" in f for f in checkpoint_files
     ):
         print(f"Loading LoRA adapter from: {adapter_path}")
-        finetuned_model = PeftModel.from_pretrained(finetuned_model_base, adapter_path)
+        policy = PeftModel.from_pretrained(policy_base, adapter_path)
     else:
         checkpoint_file = next(
             (f for f in checkpoint_files if f.endswith(".pt") or f.endswith(".pth")),
@@ -94,135 +303,141 @@ def load_models():
                     task_type="CAUSAL_LM",
                 )
                 print(f"Creating LoRA model with r={lora_config.r}, alpha={lora_config.lora_alpha}")
-                finetuned_model = get_peft_model(finetuned_model_base, lora_config)
+                policy = get_peft_model(policy_base, lora_config)
                 print("Loading LoRA state dict...")
-                finetuned_model.load_state_dict(checkpoint["lora_state_dict"], strict=False)
+                policy.load_state_dict(checkpoint["lora_state_dict"], strict=False)
                 print("[SUCCESS] Loaded LoRA adapter from checkpoint")
             elif "model_state_dict" in checkpoint:
-                finetuned_model = finetuned_model_base
-                finetuned_model.load_state_dict(checkpoint["model_state_dict"], strict=False)
-                print("[SUCCESS] Loaded full model from checkpoint (with vocab size adjustment)")
+                policy = policy_base
+                policy.load_state_dict(checkpoint["model_state_dict"], strict=False)
+                print("[SUCCESS] Loaded full model from checkpoint")
             else:
                 raise ValueError("Checkpoint format not recognized")
         else:
             raise ValueError("No checkpoint file found in artifact")
-
-    # --- 3. Create the dedicated Value Model --- [CORRECTED BLOCK]
-    print("Creating value model...")
-    # Use AutoModelForSequenceClassification with num_labels=1 as suggested
-    base_value_model = AutoModelForSequenceClassification.from_pretrained(
-        base_model_name, 
-        num_labels=1,
-        problem_type="regression"
-    )
-    base_value_model.resize_token_embeddings(len(qwen_tokenizer))
     
-    # Create a wrapper class that adds the score method TRL expects
-    class ValueModelWrapper(torch.nn.Module):
-        def __init__(self, model):
-            super().__init__()
-            self._model = model
-            # Add the base_model_prefix that TRL expects
-            self.base_model_prefix = getattr(model, 'base_model_prefix', 'model')
-            
-        def forward(self, input_ids=None, attention_mask=None, **kwargs):
-            return self._model(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
-            
-        def score(self, hidden_states):
-            # Simple linear projection from hidden states to reward
-            batch_size = hidden_states.shape[0]
-            # Use the last hidden state and project to a single value
-            last_hidden = hidden_states[:, -1, :]  # Take last token
-            # Create a simple linear projection (this could be improved)
-            reward = torch.nn.functional.linear(last_hidden, torch.randn(hidden_states.shape[-1], 1, device=hidden_states.device))
-            return reward
-        
-        # Add property to access the model as TRL expects
-        @property
-        def model(self):
-            return self._model
-    
-    value_model = ValueModelWrapper(base_value_model)
-    print("[SUCCESS] Created value model with score method.")
-    # --- [END OF CORRECTION] ---
-
-    # 4. Load the pre-built reward model with wrapper
-    print("Loading reward model and tokenizer...")
-    base_reward_model = AutoModelForSequenceClassification.from_pretrained(
-        "OpenAssistant/reward-model-deberta-v3-large-v2"
-    )
-    reward_tokenizer = AutoTokenizer.from_pretrained(
-        "OpenAssistant/reward-model-deberta-v3-large-v2"
+    # 3. Load value model (DeBERTa, following official example structure)
+    print("Loading value model (DeBERTa)...")
+    value_model = AutoModelForSequenceClassification.from_pretrained(
+        "OpenAssistant/reward-model-deberta-v3-large-v2", 
+        trust_remote_code=True, 
+        num_labels=1
     )
     
-    # Create a wrapper class for the reward model
-    class RewardModelWrapper(torch.nn.Module):
-        def __init__(self, model, tokenizer):
-            super().__init__()
-            self.model = model
-            self.tokenizer = tokenizer
-            
-        def forward(self, input_ids=None, attention_mask=None, **kwargs):
-            return self.model(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
-            
-        def score(self, hidden_states):
-            # For reward models, we need to convert hidden states back to tokens
-            # This is a simplified approach - in practice, you'd want to use the actual reward model logic
-            batch_size = hidden_states.shape[0]
-            # Use the last hidden state and project to a single value
-            last_hidden = hidden_states[:, -1, :]  # Take last token
-            # Create a simple linear projection (this could be improved)
-            reward = torch.nn.functional.linear(last_hidden, torch.randn(hidden_states.shape[-1], 1, device=hidden_states.device))
-            return reward
+    # 4. Load reward model (same DeBERTa model, following official example)
+    print("Loading reward model (DeBERTa)...")
+    reward_model = AutoModelForSequenceClassification.from_pretrained(
+        "OpenAssistant/reward-model-deberta-v3-large-v2", 
+        trust_remote_code=True, 
+        num_labels=1
+    )
     
-    reward_model = RewardModelWrapper(base_reward_model, reward_tokenizer)
-
+    # 5. Load reference model (same as policy, following official example)
+    print("Loading reference model (same as policy)...")
+    ref_policy = AutoModelForCausalLM.from_pretrained(
+        "Qwen/Qwen3-0.6B-Base",
+        trust_remote_code=True
+    )
+    # Reference model should also have resized embeddings to match policy
+    ref_policy.resize_token_embeddings(len(tokenizer))
+    print(f"Resized reference model embeddings to {len(tokenizer)} tokens")
+    
     # Move models to device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    qwen_model.to(device)
-    finetuned_model.to(device)
+    policy.to(device)
     value_model.to(device)
     reward_model.to(device)
-
+    ref_policy.to(device)
+    
+    # Wrap reward and value models with PPO-compatible interface
+    ppo_reward_model = PPOCompatibleRewardModel(reward_model, tokenizer, deberta_tokenizer, device)
+    ppo_value_model = PPOCompatibleValueModel(value_model, tokenizer, deberta_tokenizer, device)
+    
+    # Quick test of tokenization conversion
+    print("Testing tokenization conversion...")
+    test_text = "This is a test summary. TL;DR: Testing tokenization."
+    test_tokens = tokenizer(test_text, return_tensors="pt", padding=True)
+    print(f"Original text: {test_text}")
+    print(f"Qwen tokens shape: {test_tokens['input_ids'].shape}")
+    
+    # Test the conversion in our wrapper
+    try:
+        test_output = ppo_reward_model.forward(test_tokens['input_ids'].to(device), test_tokens['attention_mask'].to(device))
+        print(f"Reward model output shape: {test_output.logits.shape}")
+        print("✓ Tokenization conversion test passed!")
+    except Exception as e:
+        print(f"✗ Tokenization conversion test failed: {e}")
+        raise e
+    
     print("All models loaded successfully!")
     return (
-        qwen_model,
-        finetuned_model,
-        value_model,
-        qwen_tokenizer,
-        reward_model,
-        reward_tokenizer,
+        policy,
+        ref_policy,
+        ppo_value_model,
+        ppo_reward_model,
+        tokenizer,
+        deberta_tokenizer,
         device,
     )
 
+
+def prepare_dataset(dataset, tokenizer):
+    """Prepare dataset following the official TRL example."""
+    print("Preparing dataset following official TRL example...")
+    
+    def tokenize(element):
+        # Convert our format to match the expected format
+        # Our dataset has "prompt" field, we need to create a simple input
+        prompt = element["prompt"] + " TL;DR: "
+        input_ids = tokenizer(
+            prompt,
+            padding=False,  # No padding during tokenization (like official example)
+            truncation=True,
+            max_length=512,
+            return_tensors=None  # Return list, not tensors
+        )["input_ids"]
+        return {"input_ids": input_ids, "lengths": len(input_ids)}
+    
+    return dataset.map(
+        tokenize,
+        remove_columns=dataset.column_names,
+        num_proc=1,  # Use single process for simplicity
+    )
+
+
 def main():
-    # ... (wandb.init and load_models are unchanged) ...
+    # --- 1. Initialize W&B Run for PPO Training ---
+    wandb.init(project="qwen-ppo-finetuning", job_type="ppo-train")
+    
+    # --- 2. Load all models and tokenizers ---
     (
-        base_model,
-        finetuned_model,
+        policy,
+        ref_policy,
         value_model,
-        qwen_tokenizer,
         reward_model,
-        reward_tokenizer,
+        tokenizer,
+        deberta_tokenizer,
         device,
     ) = load_models()
-    ppo_model = finetuned_model
 
-    # --- 3. Prepare the Dataset ---
-    # We revert to the simpler tokenize function, as we'll handle text decoding in the loop
-    def tokenize_function(examples):
-        prompts = [p + " TL;DR: " for p in examples["prompt"]]
-        return qwen_tokenizer(prompts, padding=False, truncation=True, max_length=512)
-
+    # --- 3. Prepare the Dataset (following official example) ---
+    print("Loading and preparing dataset...")
     dataset = load_dataset("CarperAI/openai_summarize_tldr", split="train")
     dataset = dataset.select(range(min(100, len(dataset))))
-    dataset = dataset.map(tokenize_function, batched=True, remove_columns=["prompt", "label"])
-    dataset.set_format(type="torch")
+    
+    # Prepare dataset following official example
+    train_dataset = prepare_dataset(dataset, tokenizer)
+    
+    # Filter by length like in official example
+    train_dataset = train_dataset.filter(lambda x: x["lengths"] <= 512, num_proc=1)
+    
+    # Verify the format (removed problematic EOS assertion)
+    print(f"Dataset prepared: {len(train_dataset)} samples")
 
-    # --- 4. Configure and Initialize PPO Trainer ---
+    # --- 4. Configure and Initialize PPO Trainer (following official example) ---
     ppo_config = PPOConfig(
         learning_rate=1e-5,
-        batch_size=2,
+        batch_size=1,
         mini_batch_size=1,
         num_ppo_epochs=4,
         # PPO-specific parameters
@@ -231,168 +446,68 @@ def main():
         lam=0.95,
         cliprange=0.2,
         vf_coef=0.1,
-        # Generation parameters (these are the correct ones for PPOConfig)
+        # Generation parameters
         temperature=0.7,
-        response_length=100,  # This is max_new_tokens in PPOConfig
+        response_length=100,
+        # Evaluation
+        eval_strategy="no",  # No evaluation for now
     )
 
-    ppo_trainer = PPOTrainer(
+    # Initialize trainer following official example exactly
+    trainer = PPOTrainer(
         args=ppo_config,
-        model=ppo_model,
-        ref_model=None,
-        processing_class=qwen_tokenizer,
-        train_dataset=dataset,
+        processing_class=tokenizer,
+        model=policy,
+        ref_model=ref_policy,
         reward_model=reward_model,
         value_model=value_model,
-        data_collator=None,
+        train_dataset=train_dataset,
+        eval_dataset=None,
+        peft_config=None,  # No PEFT config for now
     )
-    # --- 5. Use the built-in PPO training method ---
-    # The current TRL version handles the training loop internally
+    
+    # STRATEGY B: Replace PPOTrainer's PolicyAndValueWrapper with our custom one
+    print("Replacing PPOTrainer's PolicyAndValueWrapper with custom implementation...")
+    original_wrapper = trainer.model
+    custom_wrapper = CustomPolicyAndValueWrapper(trainer.policy_model, trainer.value_model)
+    
+    # Move to the same device as the original wrapper
+    if hasattr(original_wrapper, 'device'):
+        custom_wrapper.to(original_wrapper.device)
+    elif hasattr(trainer, 'accelerator') and trainer.accelerator is not None:
+        # Properly handle accelerator preparation
+        custom_wrapper = trainer.accelerator.prepare(custom_wrapper)
+        trainer.model = custom_wrapper  # Assign here if using accelerator
+    else:
+        custom_wrapper.to(device)
+        trainer.model = custom_wrapper  # Assign here for non-accelerator case
+    
+    print("✓ Custom PolicyAndValueWrapper installed successfully!")
+    print("⚠️  NOTE: Reward model still uses original DeBERTa - may cause issues in get_reward() calls")
+    
+    # Test the custom wrapper
+    print("Testing custom PolicyAndValueWrapper...")
+    test_text = "This is a test for the custom wrapper. TL;DR: Testing wrapper."
+    test_tokens = tokenizer(test_text, return_tensors="pt", padding=True)
+    test_tokens = {k: v.to(device) for k, v in test_tokens.items()}
+    
+    try:
+        with torch.no_grad():
+            policy_output, value_logits = custom_wrapper(**test_tokens)
+        print(f"✓ Custom wrapper test passed!")
+        print(f"  - Policy output shape: {policy_output.logits.shape}")
+        print(f"  - Value logits shape: {value_logits.shape}")
+    except Exception as e:
+        print(f"✗ Custom wrapper test failed: {e}")
+        raise e
+    
+    # --- 5. Train following official example ---
     print("Starting PPO training...")
-    ppo_trainer.train()
+    trainer.train()
 
     print("PPO training finished.")
     # --- 6. Finish the W&B Run ---
     wandb.finish()
-
-
-# def main():
-#     # === START DEBUG CODE ===
-#     import sys
-#     import trl
-    
-#     print("--- ENVIRONMENT DEBUG ---")
-#     print("Python Executable:", sys.executable)
-#     print("TRL Library Path:", trl.__file__)
-#     print("TRL Version:", trl.__version__)
-#     print("-------------------------\n")
-    
-    
-    
-#     # --- 1. Initialize W&B Run for PPO Training ---
-#     wandb.init(project="qwen-ppo-finetuning", job_type="ppo-train")
-
-#     # --- 2. Load all models and tokenizers ---
-#     (
-#         base_model,
-#         finetuned_model,
-#         value_model,
-#         qwen_tokenizer,
-#         reward_model,
-#         reward_tokenizer,
-#         device,
-#     ) = load_models()
-#     ppo_model = finetuned_model
-
-#     # --- 3. Prepare the Dataset ---
-#     def tokenize_function(examples):
-#         prompts = [p + " TL;DR: " for p in examples["prompt"]]
-#         # The tokenizer returns input_ids and attention_mask
-#         tokenized_output = qwen_tokenizer(prompts, padding=False, truncation=True)
-#         tokenized_output["query"] = prompts
-#         return tokenized_output
-
-#     dataset = load_dataset("CarperAI/openai_summarize_tldr", split="train")
-#     dataset = dataset.select(range(min(100, len(dataset))))
-#     dataset = dataset.map(
-#         tokenize_function, batched=True, remove_columns=["prompt", "label"]
-#     )
-#     dataset.set_format(type="torch")
-
-#     # --- 4. Configure and Initialize PPO Trainer ---
-#     ppo_config = PPOConfig(
-#         learning_rate=1e-5,
-#         batch_size=2,
-#         mini_batch_size=1,
-#         gradient_accumulation_steps=2,
-#         num_ppo_epochs=4,
-#         kl_coef=0.05,
-#         gamma=1.0,
-#         lam=0.95,
-#         cliprange=0.2,
-#         vf_coef=0.1,
-#         bf16=False,
-#     )
-
-#     ppo_trainer = PPOTrainer(
-#         args=ppo_config,
-#         model=ppo_model,
-#         ref_model=None,
-#         train_dataset=dataset,
-#         processing_class=qwen_tokenizer,
-#         reward_model=reward_model,
-#         value_model= value_model,
-#     )
-#     # ppo_trainer = PPOTrainer(
-#     # config=ppo_config,
-#     # model=model,
-#     # tokenizer=tokenizer,
-#     # dataset=dataset,
-#     # reward_fn=reward_fn,
-#     # generation_kwargs=generation_kwargs,
-#     # )
-    
-#     # print("\n--- PPO TRAINER OBJECT INSPECTION ---")
-#     # print(f"Object Type: {type(ppo_trainer)}")
-#     # print("Available Attributes & Methods:")
-#     # print(dir(ppo_trainer))
-#     # print("-------------------------------------\n")
-
-#     #ppo_trainer.train()
-    
-    
-
-#     # Exit the script before it can fail
-#     # print("Exiting after inspection. The training loop did not run.")
-#     # sys.exit()
-    
-    
-    
-#     # # --- 5. PPO Training Loop ---
-#     # generation_kwargs = {
-#     #     "max_new_tokens": 100,
-#     #     "do_sample": True,
-#     #     "temperature": 0.7,
-#     #     "top_p": 0.9,
-#     #     "pad_token_id": qwen_tokenizer.pad_token_id,
-#     # }
-
-#     # response_texts = None
-#     # query_texts = None
-
-#     # for epoch in range(ppo_config.num_ppo_epochs):
-#     #     for step, batch in tqdm(enumerate(ppo_trainer.dataloader), total=len(ppo_trainer.dataloader)):
-#     #         query_tensors = batch["input_ids"]
-
-#     #         response_tensors = ppo_model.generate(query_tensors, **generation_kwargs)
-
-#     #         # Decode the response AND the original query when you need them as text
-
-#     #         response_texts = qwen_tokenizer.batch_decode(
-#     #             response_tensors, skip_special_tokens=True
-#     #         )
-#     #         query_texts = qwen_tokenizer.batch_decode(
-#     #             query_tensors, skip_special_tokens=True
-#     #         )
-
-#     #         # Compute reward
-#     #         texts_for_reward = [q + r for q, r in zip(query_texts, response_texts)]
-#     #         reward_inputs = reward_tokenizer(
-#     #             texts_for_reward, padding=True, truncation=True, return_tensors="pt"
-#     #         ).to(device)
-
-#     #         with torch.no_grad():
-#     #             reward_logits = reward_model(**reward_inputs).logits
-#     #             reward_scores = [logit for logit in reward_logits]
-
-#     #         # PPO step
-#     #         stats = ppo_trainer.step(query_tensors, response_tensors, reward_scores)
-#     #         if "ppo/returns/mean" in stats:
-#     #             wandb.log({"step": step, "epoch": epoch, "mean_reward": stats["ppo/returns/mean"]})
-#     #             print(f"Epoch {epoch}, Step {step}: Mean Reward = {stats['ppo/returns/mean']:.2f}")
-
-#     # --- 6. Finish the W&B Run ---
-#     wandb.finish()
 
 
 if __name__ == "__main__":
