@@ -108,14 +108,38 @@ def load_models():
             if "lora_state_dict" in checkpoint:
                 from peft import LoraConfig, get_peft_model
 
-                # Extract LoRA config from checkpoint if available, otherwise use defaults that match training
+                # Extract LoRA config from checkpoint if available, otherwise detect from weights
                 config_dict = checkpoint.get('config', {})
                 lora_settings = config_dict.get('advanced', {}).get('lora', {})
                 
+                # Detect LoRA rank from actual weights if not in config
+                detected_r = None
+                detected_alpha = None
+                target_modules = ["q_proj", "v_proj"]
+                
+                if 'lora_state_dict' in checkpoint:
+                    # Find the first lora_A weight to determine rank
+                    for key, weight in checkpoint['lora_state_dict'].items():
+                        if 'lora_A' in key and 'q_proj' in key:
+                            detected_r = weight.shape[0]  # First dimension of lora_A is the rank
+                            break
+                    
+                    # Look for lora_B to confirm and detect alpha (often 2*r)
+                    for key, weight in checkpoint['lora_state_dict'].items():
+                        if 'lora_B' in key and 'q_proj' in key:
+                            if detected_r and weight.shape[1] == detected_r:
+                                detected_alpha = detected_r * 2  # Common convention
+                            break
+                
+                lora_r = lora_settings.get('r', detected_r or 8)
+                lora_alpha = lora_settings.get('alpha', detected_alpha or 16)
+                
+                print(f"Detected LoRA config: r={lora_r}, alpha={lora_alpha}")
+                
                 lora_config = LoraConfig(
-                    r=lora_settings.get('r', 4),  # Default to 4 to match finetune_default.yaml
-                    lora_alpha=lora_settings.get('alpha', 8),  # Default to 8 to match finetune_default.yaml
-                    target_modules=lora_settings.get('target_modules', ["q_proj", "v_proj"]),
+                    r=lora_r,
+                    lora_alpha=lora_alpha,
+                    target_modules=lora_settings.get('target_modules', target_modules),
                     lora_dropout=lora_settings.get('dropout', 0.1),
                     bias=lora_settings.get('bias', "none"),
                     task_type="CAUSAL_LM",
@@ -441,7 +465,7 @@ def main():
     ) = load_models()
 
     print("Loading dataset...")
-    dataset = load_dataset("CarperAI/openai_summarize_tldr", split="test")
+    dataset = load_dataset("CarperAI/openai_summarize_tldr", split="test", trust_remote_code=True)
     # For a quicker run, let's take a small subset
     dataset = dataset.select(range(min(20, len(dataset))))
     print(f"Loaded {len(dataset)} samples from the dataset.")
