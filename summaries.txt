@@ -1,0 +1,6 @@
+=== Snippet 1 ===
+Original: TOPIC: philosophy
+TITLE: How can we capture the concpet of Value and understand it with AI?
+CONTENT: So, to go back to the beginning. First, there was Value. Earlier in the course we discussed the idea of embedding or vectorizing personal values or organizational values. What might a meaningful vector representation of a human's values constitute. For example, if we could create a local, explainable* machine learning system for teaching a Model values – this could be useful for a number of reasons: recruitment, team building, leadership and strategy, organizational culture. Ultimately, having a meaningful, living and growing representation of an organization's values is helpful for doing whatever it is you are trying to. Moon landings, teaching children, curing cancer, running a church, running a local council, starting a start-up or running a country.
+Summary: Value is an abstract concept that is difficult to express in machine learning.
+

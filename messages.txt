@@ -1,0 +1,63 @@
+TOPIC: philosophy
+TITLE: How can we capture the concpet of Value and understand it with AI? 
+CONTENT: So, to go back to the beginning. First, there was Value. Earlier in the course we discussed the idea of embedding or vectorizing personal values or organizational values. What might a meaningful vector representation of a human's values constitute. For example, if we could create a local, explainable* machine learning system for teaching a Model values – this could be useful for a number of reasons: recruitment, team building, leadership and strategy, organizational culture. Ultimately, having a meaningful, living and growing representation of an organization's values is helpful for doing whatever it is you are trying to. Moon landings, teaching children, curing cancer, running a church, running a local council, starting a start-up or running a country.  
+
+*The local and explainable bit are about ethics and privacy 
+
+The crazy image I had was of a ‘Blue Orb’ which held a helix type DNA structure, like the ‘Sense of Self’ in Pixar’s Inside Out 2, this could be a visualization of all the contributing threads that make up organizational values. The members of the organization answer questions and respond to prompts about their own personal values. These personal values feed into one central set of organizational values. And when you leave – you either leave behind your contribution or take it with you**.  
+
+**Again this is where data ownership, ethics and privacy come in. 
+
+ As a leadership team, or collective group, you decide how your organisational values are built. Is it equally distributed across all members' contributions? Is it top down, with 80% from the CEO? Do you ‘load in’ organizational presets – preconfigured modules which embed specific values: ‘UN Human Rights’, ‘Nelson Mandela’, ‘Warren Buffet’ or ‘Elon Musk’. As leaders or members of an organization we then have an ‘Oracle’ which is guided and taught to learn our organizational values. Which can be used to help us build a team, solve a problem, make a decision.  
+
+While exploring this idea, we realized the challenging thing about values is that in order to render a proper representation of individual or organizational values – you need to have a way of handling ‘world models’. This is because you come up against the challenge of how to deal with multiple layers of abstraction – of meaning layered within meaning. How can we build a representation of individual or organisational values without a way of simultaneously representing the context they exist in. If an organization wants to make a decision about resource allocation, or what task or project to prioritize – they need to have a multiple ‘world models’ - i.e stable representations of the various contexts this decision is happening in. For example, is the decision happening in wartime? Is there a house on fire next door. Are all the staff treated equally outside the organization? Ethical, moral and semantic frameworks rely on broader context – historical, social, cultural – in other words, meaning is constituted relationally. ‘In relation’ to other people, other things and a broader ‘world model’. The difficult thing is that these abstract ‘frames of reference’ are all operating concurrently, and the user is shifting perspectives and levels of abstract meaning in real time.  
+
+During week 6 in conversation over lunch in the park, the concept of ‘Lean Math’ came up - a unified library of mathematics rewritten in a formalized language of computer code. The aim is that once researchers have translated existing theorems into Lean, they can train Models to solve new unseen theorems – with ground truth Axioms of Mathematics built into the language, which serve as constraints on the model.   
+
+This led us to discuss the possibility of an equivalent for qualitative narrative texts. Could we train a model with Reinforcement Learning to summaries Narrative texts and output summaries that reduce a narrative text to its symbolic components. A symbolic dictionary of terms and relationships could codify a given ‘world model’. This could be trained to summarize Novels, Films scripts – and reduce narrative texts into some consistent universal symbolic language. For example – drawing on existing Fandom – whether fantasy or Marvel Universes – could we build ‘world models’ which are consistent within their own context, i.e they stick to the given ‘Lore’ of their own ‘world models’.. In the ‘real world’ gravity applies to everything and everyone... in the Gotham City ‘world models’ gravity applies to everything but does not apply to Superman.   
+
+This led us to explore the existing ontologies, tools and libraries that exist for encoding ‘narrative worlds’ - we thought about the different entities required, agent, resource, relationships, behavior. This led us to Web Ontology Language (OWL), Event Calculus, and Logic Programming & Answer Set Programming. Using these existing bodies of research, it might be possible to create summaries that  do more than just ‘extract’ the key information and present it in a plausible way. Instead, we could train a model – when given a piece of text, produces a universal symbolic representation of the narrative world and a sequence of events over a given time.  
+
+This led us to the key question: Nick said we need to know why we are doing it – otherwise we just end up with a list of formulas – a sequence of logical expressions. But we need to know why its useful. There seem to us three key areas this capacity would be useful: firstly, legal settings. For a Model to be able to take a witness statement, or two witness statements and compare the core symbolic representation would be useful – to find consistencies and build a realistic picture of what happened in the ‘real world’. Secondly, journalism or history. Two different levels of granularity – but a similar task to produce an account of a real-world event. A model to reduce any given account to its symbolic elements and make clear its underlying structures and assumptions could be useful. Finally, the ability to build and construct symbolic representations of situations, both physical and textual, could help intelligent systems develop the ability to reason and generalize real-world problem-solving skills.  
+
+In summary, there is a material world of behavior, action and concrete stuff. And then there are the ‘world models’. - perspectives, viewpoints, frames and mental models which we use to understand the material world.  On Tuesday afternoon, we briefly considered trying to train a model using reinforcement learning to codify these ‘world models’., before deciding this was wildly optimistic and returning to the basic task in hand: to create TLDR for short paragraphs of text.   
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
