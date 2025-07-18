@@ -15,7 +15,7 @@ from trl import PPOConfig, PPOTrainer
 import wandb
 
 
-class PPOCompatibleRewardModel:
+class PPOCompatibleRewardModel(nn.Module):
     """
     Interface-compatible wrapper for reward model that handles tokenization conversion.
     
@@ -26,6 +26,7 @@ class PPOCompatibleRewardModel:
     """
     
     def __init__(self, deberta_model, qwen_tokenizer, deberta_tokenizer, device):
+        super().__init__()
         self.deberta_model = deberta_model
         self.qwen_tokenizer = qwen_tokenizer
         self.deberta_tokenizer = deberta_tokenizer
@@ -84,14 +85,27 @@ class PPOCompatibleRewardModel:
         # Forward through DeBERTa model
         return self.deberta_model(**deberta_inputs)
     
-    def __call__(self, *args, **kwargs):
-        """Allow direct calling of the model."""
-        return self.forward(*args, **kwargs)
+    def train(self, mode=True):
+        """Properly propagate training mode."""
+        super().train(mode)
+        self.deberta_model.train(mode)
+        return self
+    
+    def eval(self):
+        """Properly propagate eval mode."""
+        super().eval()
+        self.deberta_model.eval()
+        return self
+    
+    def parameters(self):
+        """Return all parameters for optimizer."""
+        return self.deberta_model.parameters()
     
     def to(self, device):
         """Move model to device."""
+        super().to(device)
+        self.deberta_model.to(device)
         self.device = device
-        self.deberta_model = self.deberta_model.to(device)
         return self
 
 
@@ -460,14 +474,16 @@ def main():
     # Move to the same device as the original wrapper
     if hasattr(original_wrapper, 'device'):
         custom_wrapper.to(original_wrapper.device)
-    elif hasattr(trainer, 'accelerator'):
+    elif hasattr(trainer, 'accelerator') and trainer.accelerator is not None:
+        # Properly handle accelerator preparation
         custom_wrapper = trainer.accelerator.prepare(custom_wrapper)
+        trainer.model = custom_wrapper  # Assign here if using accelerator
     else:
         custom_wrapper.to(device)
+        trainer.model = custom_wrapper  # Assign here for non-accelerator case
     
-    # Replace the wrapper
-    trainer.model = custom_wrapper
     print("✓ Custom PolicyAndValueWrapper installed successfully!")
+    print("⚠️  NOTE: Reward model still uses original DeBERTa - may cause issues in get_reward() calls")
     
     # Test the custom wrapper
     print("Testing custom PolicyAndValueWrapper...")
