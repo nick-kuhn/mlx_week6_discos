@@ -2,9 +2,9 @@
 
 ## Training
 Train the model with reward evaluation:
-`uv run -m model.train --reward-evaluation --verbose_evals`
+`uv run -m model.train --config configs/finetune_balanced.yaml --reward-evaluation --verbose-evals`
 If this is to gpu-heavy, drop the reward evaluation:
-`uv run -m model.train --verbose_evals`
+`uv run -m model.train --config configs/finetune_balanced.yaml --verbose-evals`
 
 ### To Load the reddit TLDR summarization dataset:
 ```
