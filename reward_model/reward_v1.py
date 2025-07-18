@@ -75,7 +75,7 @@ def load_models():
 
     # 2. Load fine-tuned model from W&B artifact
     print("Loading fine-tuned model from W&B...")
-    artifact_path = "ntkuhn/summarization-finetuning/best_finetuned_model:v13"
+    artifact_path = "ntkuhn/summarization-finetuning/checkpoint_qwen_summarization_20250717_182805_step_10000:v0"
     adapter_path = download_wandb_model(artifact_path)
 
     # Create a separate finetuned model instance from the base model
