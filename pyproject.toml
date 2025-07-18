@@ -17,4 +17,6 @@ dependencies = [
     "matplotlib>=3.10.3",
     "scipy>=1.15.3",
     "trl>=0.19.1",
+    "huggingface-hub>=0.33.4",
+    "openai-whisper>=20250625",
 ]
