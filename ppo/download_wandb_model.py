@@ -2,7 +2,7 @@ import wandb
 import os
 
 # The artifact path you provided
-ARTIFACT_PATH = "ntkuhn/summarization-finetuning/best_finetuned_model_qwen_summarization_20250716_170600:v57"
+ARTIFACT_PATH = "ntkuhn/summarization-finetuning/checkpoint_qwen_summarization_20250717_182805_step_10000:v0"
 
 # The local directory where you want to save it
 LOCAL_DIR = "./qwen_finetuned_local"
