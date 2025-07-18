@@ -6,6 +6,10 @@ Train the model with reward evaluation:
 If this is to gpu-heavy, drop the reward evaluation:
 `uv run -m model.train --config configs/finetune_balanced.yaml --verbose-evals`
 
+### Inference
+`uv run model/inference.py --snippet-file "my-snippets.txt"` 
+For formatting of the snippets see `snippets.txt`
+
 ### To Load the reddit TLDR summarization dataset:
 ```
 from transformers import AutoTokenizer, AutoModelForCausalLM
