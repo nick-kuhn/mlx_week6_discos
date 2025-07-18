@@ -15,6 +15,10 @@ from model.dataset import TLDRDataset
 tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B-Base")
 
 tldr_ds = TLDRDataset('CarperAI/openai_summarize_tldr', tokenizer, split="train")
-print(tldr_ds[0])  
+print(tldr_ds[0]) 
 ```
+
+Friday - reward model 
+
+https://huggingface.co/Skywork/Skywork-Reward-V2-Qwen3-0.6B
 
